@@ -11,7 +11,7 @@
 //! project's stance that `contested` is a status, never a silently-collapsed error (AGENTS.md §6).
 //! The gate for a description that matches in full is deliberately conservative and identical for
 //! every caller (read or write verb): resolved only when exactly one candidate occupies the best
-//! rank tier.
+//! rank tier, and, among several that hold every word, when it is about the question (see below).
 //!
 //! A description that names a word no decision contains ("why did we choose to move the demo
 //! cell..." when the record never says "choose") is not a dead end: when no decision matches
@@ -34,7 +34,11 @@
 //! was never offered. A close candidate whose title and topic keys carry more of the question
 //! (`About`) than every full match is promoted (`out_heading`): listed first, and answered with by
 //! a verb that only reads, saying what it lacks. Among full matches, the one that is more about
-//! the question comes first.
+//! the question comes first. It is answered with alone only when it is about the question in its
+//! own right: with other decisions holding every word too, its own title and topic keys must hold
+//! more than half of the question's words, or the full matches are listed (`full_match_leads`). A
+//! leader that out-weighs the rest by one word in its title, with the others only in a long
+//! rationale, is not the decision asked about because it leads by that word.
 //!
 //! A negation in the description ("don't adopt Kafka", "why didn't we ...", "do not ...") is not a
 //! word to find: it never appears in `missing_terms`. It is polarity. A decision is the opposite of
@@ -277,8 +281,9 @@ fn resolve_for(
             })
             .count()
     });
-    let leader_is_clear =
-        asker == Asker::Reader && close_candidate_leads(resolver_terms(description).len(), &rows);
+    let term_count = resolver_terms(description).len();
+    let leader_is_clear = asker == Asker::Reader && close_candidate_leads(term_count, &rows);
+    let full_leader_is_about_it = full_match_leads(term_count, &rows);
 
     let leader_promoted = rows.first().is_some_and(|leader| leader.promoted);
     let mut candidates: Vec<ResolvedCandidate> = rows
@@ -307,7 +312,7 @@ fn resolve_for(
             ResolveOutcome::Ambiguous { candidates }
         }
     } else if !candidates.is_empty() {
-        if leader_ties == 1 {
+        if leader_ties == 1 && full_leader_is_about_it {
             ResolveOutcome::Resolved {
                 candidate: candidates.remove(0),
             }
@@ -367,6 +372,24 @@ fn close_candidate_leads(term_count: usize, rows: &[ResolverCandidateRow]) -> bo
         && rows.get(1).is_none_or(|next| {
             (first.promoted && !next.promoted) || closeness(first) < closeness(next)
         })
+}
+
+/// Whether the first of `rows` (full matches, the most about the question first) is the one asked
+/// about, so that a call answers with it alone. When other decisions hold every word too, a leader
+/// that out-weighs them (`About`) can do it by one word in its title or topic keys, with no more
+/// than half of the question there and the rest only in a long rationale: it is not thereby the
+/// decision asked about, and naming it hides the others behind a confident answer (hivemind-5ctc).
+/// So it is answered with only when its own title and topic keys hold more than half of the
+/// question's words; otherwise the full matches are listed, most about the question first. The
+/// only decision that holds every word has none to be listed among, and the decision the question
+/// names outright (its id or title is the question, or it records the question as asked) is the
+/// one asked about whatever its words: both are answered with as before. A close candidate has
+/// its own gate (`close_candidate_leads`).
+fn full_match_leads(term_count: usize, rows: &[ResolverCandidateRow]) -> bool {
+    let Some(first) = rows.first() else {
+        return false;
+    };
+    rows.len() == 1 || first.about.is_named() || first.headline_words * 2 > term_count
 }
 
 /// Takes the match of another record of the same decision onto the one shown: the best rank, the

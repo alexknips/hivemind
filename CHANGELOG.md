@@ -519,6 +519,33 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   `not_found` outcome. `docs/DEPLOYMENT.md` said HTTP answered 200 with that outcome; it now
   says what the route does. (hivemind-ctok)
 
+- **`why`, `verify`, `chain` and `compact-view` no longer name a decision alone because it
+  leads the decisions that all hold every word by one word.** "Why doesn't the decision page
+  show when a decision was accepted or superseded?" was answered with a decision about how a
+  contested, superseded decision is noted (it says "superseded" in its title and files
+  "decision-page" under a topic key), while the decisions about the status history, which the
+  question is about, hold every word as well and were not offered. The negation was not the
+  cause: the question without it was answered the same way. Among decisions that hold every
+  word, the one whose title and topic keys carry the most of the question leads, and a lead of
+  one word was enough to be named alone, with two of four words in its headline and the rest in
+  a long rationale. When other decisions hold every word, the leader is now named alone only if
+  its own title and topic keys hold more than half of the question's words; otherwise the full
+  matches come back as an `outcome: ambiguous` list, the most about the question first and
+  nothing in `missing_terms`. The only decision that holds every word, and a decision the
+  question names outright (its id or title is the question, or it records the question as
+  asked), are named as before. A verb that writes (`disagree`, `supersede`, ...) is held to the
+  same rule, so it asks for `--pick` or `--id` instead of writing to the leader. Through the
+  real binary on a copy of today's ledger (534 events) and its 455-event prefix: the
+  "not", "doesn't" and plain forms of that question list seven decisions with the two about
+  the status history among them (#2 and #4); the checker's 55 questions go from 6 wrong
+  one-call answers to 5 and the 34 of hivemind-eral from 3 to 2; over 414 / 366 generated
+  questions wrong one-call answers go 4 -> 3 / 6 -> 5; right one-call answers (32, and 363 /
+  317 generated), the 14 hard paraphrases, the 41 hold-out questions, 32 fresh ones and 54
+  unrelated controls (none answered) are unchanged. Not fixed: a 3-word paraphrase of that
+  question ("when was a decision accepted or superseded on the decision page") still names the
+  same decision, since two of its three words are in that decision's headline. MCP tool
+  descriptions for `chain`, `why`, `compact_view` and `verify` say so. (hivemind-5ctc)
+
 - **A decision captured from a session that was classified days later says when it was said,
   not when the classifier ran.** A decision the classifier captured without naming a source
   turn was dated at the classification's own time, so `why` and `verify` showed a session said

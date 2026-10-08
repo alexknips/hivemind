@@ -716,6 +716,12 @@ impl About {
             .total_cmp(&other.weight)
             .then_with(|| self.title.total_cmp(&other.title))
     }
+
+    /// Whether the question names this decision outright (see `NAMED`), so nothing about where
+    /// its words sit is left to weigh.
+    pub(crate) fn is_named(&self) -> bool {
+        self.weight.is_infinite()
+    }
 }
 
 /// What `out_heading` needs of one candidate.

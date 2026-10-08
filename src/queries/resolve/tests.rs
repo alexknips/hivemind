@@ -1753,3 +1753,109 @@ fn a_decision_whose_title_says_the_question_in_other_words_leads_one_with_a_gene
     }
     Ok(())
 }
+
+/// Three decisions that hold every word of "why doesn't the page show when it was enabled or
+/// retired?" (hivemind-5ctc). The first says two of the four in its title and topic keys, which
+/// is half and no more; the other two say one each and hold the rest in their rationales. The
+/// first is the most about the question and is not the decision asked about.
+fn audit_graph() -> Result<MemoryGraph> {
+    graph_from_events([
+        decision_proposed_because(
+            1,
+            "d:flagged",
+            "A retired rule that was disputed says so on a second line of its one status note",
+            "The status note was one line and chose retired before disputed, so a rule that was enabled and later retired hid its dispute; the page showed it nowhere.",
+            &["audit-page"],
+        ),
+        decision_proposed_because(
+            2,
+            "d:history",
+            "Audit page history lists one row per logged change",
+            "Each change is dated: the day a rule was enabled and the day it was retired. The page shows no date for older rows.",
+            &["audit-page"],
+        ),
+        decision_proposed_because(
+            3,
+            "d:hidden",
+            "Rows with no date stay hidden until the log gives a day",
+            "The page shows only the rows that the log can place. A rule enabled earlier or retired earlier keeps no day.",
+            &["audit-page"],
+        ),
+        decision_proposed(4, "d:queue", "Adopt async queue for billing", &["billing"]),
+    ])
+}
+
+#[test]
+fn a_full_match_that_leads_on_half_the_words_in_its_headline_is_listed_not_answered() -> Result<()>
+{
+    let graph = audit_graph()?;
+
+    // d:flagged says "retired" in its title and "page" in a topic key: the most about the
+    // question, by one word. Two decisions that are about the status history hold every word
+    // as well, so naming d:flagged would hide them behind a confident answer. Negated or not.
+    for question in [
+        "why doesn't the page show when it was enabled or retired?",
+        "why does the page show when it was enabled or retired?",
+    ] {
+        for outcome in both_askers(&graph, question)? {
+            match outcome {
+                ResolveOutcome::Ambiguous { candidates } => {
+                    let ids: Vec<&str> =
+                        candidates.iter().map(|c| c.decision_id.as_str()).collect();
+                    assert_eq!(ids.first(), Some(&"d:flagged"), "{question:?}: {ids:?}");
+                    assert_eq!(ids.len(), 3, "{question:?}: {ids:?}");
+                    assert!(ids.contains(&"d:history") && ids.contains(&"d:hidden"));
+                    assert!(
+                        candidates.iter().all(|c| c.missing_terms.is_empty()),
+                        "every one holds every word: {candidates:?}"
+                    );
+                }
+                other => panic!("{question:?} is listed, not answered: {other:?}"),
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_full_match_whose_headline_holds_most_of_the_words_is_still_answered() -> Result<()> {
+    let graph = audit_graph()?;
+
+    // Two of three words are in d:flagged's title and topic keys: more than half.
+    for outcome in both_askers(&graph, "why doesn't the page show when it was retired?")? {
+        match outcome {
+            ResolveOutcome::Resolved { candidate } => {
+                assert_eq!(candidate.decision_id, "d:flagged");
+                assert!(candidate.missing_terms.is_empty());
+            }
+            other => panic!("most of the words are in its headline: {other:?}"),
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn the_only_decision_holding_every_word_is_answered_whatever_its_headline() -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed_because(
+            1,
+            "d:notes",
+            "Notes",
+            "The page shows when a rule was enabled or retired.",
+            &[],
+        ),
+        decision_proposed(2, "d:queue", "Adopt async queue for billing", &["billing"]),
+    ])?;
+
+    // Nothing else holds the words, so there is no one to list it among.
+    for outcome in both_askers(
+        &graph,
+        "why doesn't the page show when it was enabled or retired?",
+    )? {
+        match outcome {
+            ResolveOutcome::Resolved { candidate } => assert_eq!(candidate.decision_id, "d:notes"),
+            other => panic!("the one decision that holds them all answers: {other:?}"),
+        }
+    }
+    Ok(())
+}

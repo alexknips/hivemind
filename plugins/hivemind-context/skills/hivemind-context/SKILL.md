@@ -204,6 +204,14 @@ another decision carries more of the question in its title and topic keys and la
 that one comes first (and `why` answers with it, opening with its `close match:` line). Read
 that line the same way: the decision lacks the words it names.
 
+When several decisions hold every word, `why` answers with the first of them alone only if its
+own title and topic keys hold more than half of your words. A decision that leads by one word
+in its title, with the rest only in its rationale, is listed with the others (`outcome:
+ambiguous`, nothing in `missing_terms`) instead of being named as the one you asked about. Read
+the list; if none of it is the decision you meant, ask again with other words or with `--id`. A
+decision that is the only one holding every word, or that records your question as asked, is
+still answered with.
+
 A newer hivemind also folds a decision that was recorded more than once and
 linked as the same decision: the answer shows the earliest matching record and
 lists the others under `also_recorded_as` (an `also recorded as:` line in

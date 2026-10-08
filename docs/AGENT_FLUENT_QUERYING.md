@@ -289,6 +289,22 @@ So where the words sit is compared before whether every word is somewhere:
   the ambiguity gate applies to them as before. This replaces "the rank tier alone"
   for full matches: two decisions that each have one word in their title used to be
   equals however many of the other words each held in its title, and now are not.
+- Leading the full matches is not being the decision asked about (hivemind-5ctc). A
+  decision can out-weigh the others by one word in its title and still carry no more
+  than half of the question in its title and topic keys, the rest only in its
+  rationale. When several decisions hold every word, the leader is answered with
+  alone only if its own title and topic keys hold **more than half** of the
+  question's words; otherwise the full matches come back as an `Ambiguous` list, most
+  about the question first, each with nothing missing. Two of four words is half, and
+  not enough: "why doesn't the page show when it was enabled or retired" is not
+  answered with the decision whose title says "retired" and whose topic key says
+  "page", when two decisions about the page's history hold all four words as well. The
+  question has no negation to blame, it is the same with or without one. Two
+  cases keep the old answer: the only decision that holds every word (there is no one
+  to list it among), and the decision the question names outright (its id or title is
+  the question, or it records the question as asked). A verb that writes is held to
+  the same rule as one that only reads. A decision that lacks a word has its own gate
+  (above).
 - `recall` orders its list the same way (promoted close matches first, then the full
   matches by aboutness, then the remaining close matches by aboutness and, among the
   equally about it, fewest missing words), so `why` names what `recall` just named.
@@ -496,6 +512,10 @@ the rank tier. Resolved still means exactly one candidate holds the best of all 
 with no numeric margin; two decisions that carry the same words in their headline and
 share the rank tier are still `Ambiguous`. Two that each had one word in their title
 used to tie however many of the other words each held in its title; they no longer do.
+Resolved also needs the one that holds the best of all three to be about the question
+when it is not the only decision holding every word: its own title and topic keys must
+hold more than half of the question's words, or the full matches are listed
+(hivemind-5ctc, *what the question is about*, §1.1).
 
 `--pick N` selects candidate `#N` from the *immediately preceding* resolver
 call in the same invocation (used together with `--from-last`, §5) or is
