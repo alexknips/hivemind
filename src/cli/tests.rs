@@ -3628,59 +3628,85 @@ fn recall_finds_a_decision_asked_with_another_form_or_a_synonym_of_its_words() -
         "The page fetches static files from the snapshot folder, the same on every device.",
     )?;
 
-    let top_three = |question: &str| -> Result<Vec<String>, Box<dyn std::error::Error>> {
-        let answer: serde_json::Value = serde_json::from_str(&run(&Cli::parse_from([
-            "hivemind",
-            "--hivemind-dir",
-            dir,
-            "query",
-            "recall",
-            question,
-        ]))?)?;
-        Ok(answer["data"]["ranked"]["items"]
-            .as_array()
-            .map(|items| {
-                items
-                    .iter()
-                    .take(3)
-                    .filter_map(|item| item["decision"]["id"].as_str().map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default())
-    };
+    let top_ranked =
+        |question: &str, limit: usize| -> Result<Vec<String>, Box<dyn std::error::Error>> {
+            let answer: serde_json::Value = serde_json::from_str(&run(&Cli::parse_from([
+                "hivemind",
+                "--hivemind-dir",
+                dir,
+                "query",
+                "recall",
+                question,
+            ]))?)?;
+            Ok(answer["data"]["ranked"]["items"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .take(limit)
+                        .filter_map(|item| item["decision"]["id"].as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default())
+        };
 
-    for (question, target) in [
-        // The other form of a word: superseded ~ supersession.
+    for (question, target, limit) in [
+        // The other form of a word: superseded ~ supersession. The decisions whose titles say
+        // "page" or "shows" come first (hivemind-eral), as they do for the same question asked
+        // without the negation (checked below): this one holds the words in its rationale, in
+        // other forms, and still comes before the four that are about something else.
         (
             "why doesn't the decision page show when a decision was accepted or superseded?",
             &history,
+            4,
         ),
         // A stand-in word: interface ~ UI.
         (
             "how does the interface refer to an agent that made a decision?",
             &agents,
+            3,
         ),
         // Stand-ins for the browser, and a word that no decision uses at all.
         (
             "what makes a link to a decision the same on my laptop and my phone?",
             &links,
+            3,
         ),
         // A possessive, a picture for a graph, a wrong assumption for a refuted one.
         (
             "when an assumption turns out wrong, how far does the website's picture show the damage spreading?",
             &chain,
+            3,
         ),
     ] {
-        let top = top_three(question)?;
+        let top = top_ranked(question, limit)?;
         ensure(
             top.contains(target),
-            &format!("`{question}` should return its decision in the top 3, got {top:?}"),
+            &format!("`{question}` should return its decision in the top {limit}, got {top:?}"),
         )?;
     }
 
+    // A negation is polarity: it ranks the same as the question without it, because no title here
+    // says all of what it asks (hivemind-z05v).
+    ensure_json_eq(
+        &serde_json::json!(top_ranked(
+            "why doesn't the decision page show when a decision was accepted or superseded?",
+            8
+        )?),
+        serde_json::json!(top_ranked(
+            "why does the decision page show when a decision was accepted or superseded?",
+            8
+        )?),
+        "a negated question ranks like the plain one",
+    )?;
+
     // Stand-ins do not make an unrelated question answerable.
     ensure(
-        top_three("what did we decide about the kubernetes autoscaler quota")?.is_empty(),
+        top_ranked(
+            "what did we decide about the kubernetes autoscaler quota",
+            3,
+        )?
+        .is_empty(),
         "nothing recorded about kubernetes",
     )?;
 
