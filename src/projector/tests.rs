@@ -930,6 +930,11 @@ fn a_long_title_slug_ends_at_a_whole_word() {
 }
 
 #[test]
+fn the_slug_cap_sits_below_the_topic_key_cut() {
+    const { assert!(MAX_DECISION_SLUG_LEN < crate::commands::MAX_TOPIC_KEY_LEN) };
+}
+
+#[test]
 fn a_title_of_exactly_the_cap_keeps_every_word() {
     assert_eq!(SIXTY_CHARACTER_TITLE.len(), MAX_DECISION_SLUG_LEN);
     assert_eq!(

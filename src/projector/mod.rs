@@ -992,8 +992,8 @@ fn grounding_edge_properties(
 const MAX_DECISION_SLUG_LEN: usize = 60;
 
 // `cut_slug_at_word` reads the character just past the cap to tell "the word ends exactly at the
-// cap" from "the word runs on"; `normalize_topic_key`'s own cut at 64 must not hide that character.
-const _: () = assert!(MAX_DECISION_SLUG_LEN < crate::commands::MAX_TOPIC_KEY_LEN);
+// cap" from "the word runs on"; `normalize_topic_key`'s own cut at 64 must not hide that character
+// (`the_slug_cap_sits_below_the_topic_key_cut` holds the two apart).
 
 /// Below this many characters of a colliding decision's id, a suffix is still too likely to
 /// collide with another short suffix to be worth trying (`assign_decision_slug` grows from here).
