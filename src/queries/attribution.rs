@@ -529,6 +529,7 @@ fn review_label(shape: ReviewShape) -> String {
         ReviewShape::SelfAccepted => "self_accepted".to_owned(),
         ReviewShape::PeerReviewed => "peer_reviewed".to_owned(),
         ReviewShape::Disputed => "disputed".to_owned(),
+        ReviewShape::Rejected => "rejected".to_owned(),
     }
 }
 

@@ -4795,6 +4795,26 @@ fn disputed_decision_context() -> Result<()> {
     Ok(())
 }
 
+/// A rejection is a review: a decision someone turned down and nobody accepted is `Rejected`,
+/// not `Unreviewed` (hivemind-6td5).
+#[test]
+fn rejected_decision_with_no_acceptor_is_rejected_not_unreviewed() -> Result<()> {
+    let graph = ContextGraph::default()
+        .add_decision("d:1", "agent", None, "Rationale", 20)
+        .add_actor("agent:claude:crew", "agent")
+        .add_actor("human:bob", "human")
+        .set_proposer("d:1", "agent:claude:crew")
+        .add_rejector("d:1", "human:bob");
+
+    let ctx = get_decision_context(&graph, "d:1")?.data.unwrap();
+
+    assert_eq!(ctx.review, ReviewShape::Rejected);
+    assert!(ctx.accepted_by.is_empty());
+    assert_eq!(ctx.accepted_count, 0);
+    assert_eq!(ctx.rejected_count, 1);
+    Ok(())
+}
+
 #[test]
 fn self_accepted_decision_context() -> Result<()> {
     let graph = ContextGraph::default()

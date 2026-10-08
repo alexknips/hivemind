@@ -1,5 +1,5 @@
 //! What a classified decision is projected with from the batches it was classified from: when
-//! they were said, and which capture session shipped them.
+//! they were said, which capture session shipped them, and who the session was held with.
 //!
 //! A received batch never reaches the graph, and the projector reads one event at a time, so a
 //! replay keeps the newest turn time and the session of every batch it passes. A classification
@@ -13,8 +13,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use chrono::{DateTime, Utc};
 
 use crate::events::{
-    classified_batch_ids, received_batch_newest_turn_time, received_batch_session_id, Event,
-    EventId, EventType, TenantId,
+    classified_batch_ids, received_batch_newest_turn_time, received_batch_session_id,
+    session_agent_actor, Event, EventId, EventType, TenantId,
 };
 use crate::ledger::EventLedger;
 use crate::Result;
@@ -24,12 +24,36 @@ use crate::Result;
 const HEAD_PAGE: usize = 10_000;
 
 /// What a replay knows of the batches it has passed: the newest turn time of each whose turns
-/// carry one, and the session of each that names one. A batch with no turn time has no time
-/// entry, and a batch that names no session has no session entry: nothing is guessed for either.
+/// carry one, the session of each that names one, and who submitted each and with which agent
+/// tool. A batch with no turn time has no time entry, and a batch that names no session has no
+/// session entry: nothing is guessed for either.
 #[derive(Debug, Default)]
 pub(super) struct ReceivedBatches {
     turn_times: HashMap<String, DateTime<Utc>>,
     sessions: HashMap<String, String>,
+    submitters: HashMap<String, Submitter>,
+}
+
+/// Who shipped a received batch: the actor on the event, and the agent tool it names.
+#[derive(Debug)]
+struct Submitter {
+    actor_id: String,
+    agent_tool: String,
+}
+
+/// The conversation a classification was drawn from, as the batches it covers state it. Each part
+/// is empty when the ledger received none of the batches (a `hivemind emit` capture names a fresh
+/// batch id): who was in a conversation is never guessed.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct ClassifiedSession {
+    /// The capture sessions that shipped the batches, sorted and without repeats.
+    pub(super) session_ids: Vec<String>,
+    /// Whoever submitted the first covered batch that was received: the one who started the
+    /// session.
+    pub(super) initiator: Option<String>,
+    /// Every covered batch's submitter and the agent that ran beside them
+    /// ([`session_agent_actor`]), in the order the batches are named, each once.
+    pub(super) participants: Vec<String>,
 }
 
 impl ReceivedBatches {
@@ -53,6 +77,17 @@ impl ReceivedBatches {
                 .entry(batch_id.to_owned())
                 .or_insert_with(|| session_id.to_owned());
         }
+        self.submitters
+            .entry(batch_id.to_owned())
+            .or_insert_with(|| Submitter {
+                actor_id: event.actor_id.clone(),
+                agent_tool: event
+                    .payload
+                    .get("agent_tool")
+                    .and_then(|tool| tool.as_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+            });
     }
 
     /// The newest turn time across `batch_ids`, `None` when none of them carries one.
@@ -63,15 +98,37 @@ impl ReceivedBatches {
             .max()
     }
 
-    /// The sessions that shipped `batch_ids`, sorted and without repeats; empty when none of the
-    /// batches was received or none names a session.
-    pub(super) fn sessions(&self, batch_ids: &[String]) -> Vec<String> {
-        let sessions: BTreeSet<&str> = batch_ids
+    /// The conversation `batch_ids` were shipped from: their sessions, who started it and who
+    /// took part.
+    pub(super) fn session(&self, batch_ids: &[String]) -> ClassifiedSession {
+        let session_ids: BTreeSet<&str> = batch_ids
             .iter()
             .filter_map(|batch_id| self.sessions.get(batch_id.as_str()))
             .map(String::as_str)
             .collect();
-        sessions.into_iter().map(str::to_owned).collect()
+        let mut session = ClassifiedSession {
+            session_ids: session_ids.into_iter().map(str::to_owned).collect(),
+            ..ClassifiedSession::default()
+        };
+        for submitter in batch_ids
+            .iter()
+            .filter_map(|batch_id| self.submitters.get(batch_id.as_str()))
+        {
+            let agent = session_agent_actor(&submitter.actor_id, &submitter.agent_tool);
+            for actor in [Some(submitter.actor_id.as_str()), agent.as_deref()]
+                .into_iter()
+                .flatten()
+                .filter(|actor| !actor.is_empty())
+            {
+                if session.initiator.is_none() && actor == submitter.actor_id {
+                    session.initiator = Some(actor.to_owned());
+                }
+                if !session.participants.iter().any(|known| known == actor) {
+                    session.participants.push(actor.to_owned());
+                }
+            }
+        }
+        session
     }
 
     /// The batches that a replay from `offset` classifies without having received them in the

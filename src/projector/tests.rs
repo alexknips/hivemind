@@ -3000,6 +3000,194 @@ fn an_extended_graph_carries_the_same_sessions_as_a_rebuilt_one() -> Result<()> 
     Ok(())
 }
 
+/// A received batch shipped by `actor_id` running `agent_tool`, in capture session `session_id`.
+fn received_batch_by(batch_id: &str, actor_id: &str, agent_tool: &str, session_id: &str) -> Event {
+    event(
+        EventType::IngestBatchReceived,
+        actor_id,
+        json!({
+            "batch_id": batch_id,
+            "agent_tool": agent_tool,
+            "session_id": session_id,
+            "turns": []
+        }),
+    )
+}
+
+/// The actors the graph's decision points at with `relation`, sorted.
+fn decision_actors(graph: &RecordingGraph, relation: RelationKind) -> Vec<String> {
+    let mut actors: Vec<String> = graph
+        .edges()
+        .keys()
+        .filter(|(kind, _, _)| *kind == relation)
+        .map(|(_, _, to)| to.clone())
+        .collect();
+    actors.sort();
+    actors
+}
+
+/// hivemind-6td5: a classified decision is initiated by whoever submitted the batch it came from,
+/// and the agent that ran beside a human submitter takes part with them. The classification
+/// names nobody; the received batch does.
+#[test]
+fn a_classified_decision_is_initiated_by_its_batchs_submitter_with_the_agent_beside_them(
+) -> Result<()> {
+    let graph = project_events(vec![
+        received_batch_by("b-1", "human:alex@example.com", "claude", "sess-a"),
+        classification(
+            &["b-1"],
+            classified_decision_capture(None, &[], &[]),
+            CLASSIFIED_AT,
+        ),
+    ])?;
+
+    assert_eq!(
+        // ubs:ignore
+        decision_actors(&graph, RelationKind::InitiatedBy),
+        ["human:alex@example.com"]
+    );
+    assert_eq!(
+        // ubs:ignore
+        decision_actors(&graph, RelationKind::ParticipatedBy),
+        ["agent:claude:hook", "human:alex@example.com"]
+    );
+    Ok(())
+}
+
+/// A batch an agent token shipped needs no agent synthesised beside it: the token is the agent.
+#[test]
+fn a_decision_from_an_agent_tokens_batch_names_that_agent_alone() -> Result<()> {
+    let graph = project_events(vec![
+        received_batch_by("b-1", "agent:gastown:crew", "claude", "sess-a"),
+        classification(
+            &["b-1"],
+            classified_decision_capture(None, &[], &[]),
+            CLASSIFIED_AT,
+        ),
+    ])?;
+
+    assert_eq!(
+        // ubs:ignore
+        decision_actors(&graph, RelationKind::InitiatedBy),
+        ["agent:gastown:crew"]
+    );
+    assert_eq!(
+        // ubs:ignore
+        decision_actors(&graph, RelationKind::ParticipatedBy),
+        ["agent:gastown:crew"]
+    );
+    Ok(())
+}
+
+/// A classification of batches the ledger never received (a `hivemind emit` capture names a
+/// fresh batch id) names nobody: who was in a conversation is never guessed.
+#[test]
+fn a_decision_classified_from_unreceived_batches_names_nobody() -> Result<()> {
+    let graph = project_events(vec![classification(
+        &["batch:sess-a:0-5"],
+        classified_decision_capture(None, &[], &[]),
+        CLASSIFIED_AT,
+    )])?;
+
+    assert!(decision_actors(&graph, RelationKind::InitiatedBy).is_empty()); // ubs:ignore
+    assert!(decision_actors(&graph, RelationKind::ParticipatedBy).is_empty()); // ubs:ignore
+    Ok(())
+}
+
+/// One classification over batches from more than one submitter: the first batch it names says
+/// who started the session, and everyone who shipped a batch took part, each once.
+#[test]
+fn the_first_named_batchs_submitter_initiates_and_every_submitter_takes_part() -> Result<()> {
+    let graph = project_events(vec![
+        received_batch_by("b-1", "human:alex@example.com", "claude", "sess-a"),
+        received_batch_by("b-2", "human:dana@example.com", "claude", "sess-a"),
+        received_batch_by("b-3", "human:alex@example.com", "claude", "sess-a"),
+        classification(
+            &["b-2", "b-1", "b-3"],
+            classified_decision_capture(None, &[], &[]),
+            CLASSIFIED_AT,
+        ),
+    ])?;
+
+    assert_eq!(
+        // ubs:ignore
+        decision_actors(&graph, RelationKind::InitiatedBy),
+        ["human:dana@example.com"]
+    );
+    assert_eq!(
+        // ubs:ignore
+        decision_actors(&graph, RelationKind::ParticipatedBy),
+        [
+            "agent:claude:hook",
+            "human:alex@example.com",
+            "human:dana@example.com"
+        ]
+    );
+    Ok(())
+}
+
+/// A capture written before the batches were read keeps the names it carries, and gains the
+/// batches' beside them.
+#[test]
+fn a_capture_that_carries_its_own_attribution_keeps_it_and_gains_the_batchs() -> Result<()> {
+    let mut capture = classified_decision_capture(None, &[], &[]);
+    capture["participants"] = json!(["human:erin@example.com"]);
+    capture["session_initiator"] = json!("human:erin@example.com");
+    let graph = project_events(vec![
+        received_batch_by("b-1", "human:alex@example.com", "claude", "sess-a"),
+        classification(&["b-1"], capture, CLASSIFIED_AT),
+    ])?;
+
+    assert_eq!(
+        // ubs:ignore
+        decision_actors(&graph, RelationKind::InitiatedBy),
+        ["human:erin@example.com"]
+    );
+    assert_eq!(
+        // ubs:ignore
+        decision_actors(&graph, RelationKind::ParticipatedBy),
+        [
+            "agent:claude:hook",
+            "human:alex@example.com",
+            "human:erin@example.com"
+        ]
+    );
+    Ok(())
+}
+
+/// A graph extended from an offset (the server's graph cache) names the same people as one
+/// rebuilt from the start, though the batch was received before the offset.
+#[test]
+fn an_extended_graph_names_the_same_session_actors_as_a_rebuilt_one() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(received_batch_by(
+        "b-1",
+        "human:alex@example.com",
+        "claude",
+        "sess-a",
+    ))?;
+    let extended = RecordingGraph::default();
+    project_from_ledger(&ledger, &extended, 0)?;
+    let received_up_to = ledger.latest_offset()?;
+    ledger.append(classification(
+        &["b-1"],
+        classified_decision_capture(None, &[], &[]),
+        CLASSIFIED_AT,
+    ))?;
+
+    project_from_ledger(&ledger, &extended, received_up_to)?;
+    let rebuilt = RecordingGraph::default();
+    project_from_ledger(&ledger, &rebuilt, 0)?;
+
+    assert_eq!(
+        // ubs:ignore
+        decision_actors(&extended, RelationKind::InitiatedBy),
+        ["human:alex@example.com"]
+    );
+    assert_eq!(extended.snapshot(), rebuilt.snapshot()); // ubs:ignore
+    Ok(())
+}
+
 /// A ledger bound to one tenant the way the Postgres ledger is: the `_for_tenant` methods honour
 /// the tenant they are given, while the plain methods and `bound_tenant` address the bound one.
 struct BoundTenantLedger {

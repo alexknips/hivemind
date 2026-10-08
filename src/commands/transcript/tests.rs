@@ -11,7 +11,7 @@ use crate::events::{
 use crate::ledger::{EventLedger, InMemoryEventLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::{
-    get_decision_brief, get_waiting_requests, DecisionStatus, WaitingRequestsRequest,
+    get_decision_brief, get_waiting_requests, DecisionBrief, DecisionStatus, WaitingRequestsRequest,
 };
 
 const SUBMITTER: &str = "agent:claude:hook";
@@ -59,10 +59,20 @@ fn record_as(
     fixture: &str,
     batch_id: &str,
 ) -> crate::Result<ClassifiedBatchRecorded> {
+    record_submitted_by(ledger, fixture, batch_id, SUBMITTER)
+}
+
+/// [`record_as`] for a batch that `submitter` shipped.
+fn record_submitted_by(
+    ledger: &InMemoryEventLedger,
+    fixture: &str,
+    batch_id: &str,
+    submitter: &str,
+) -> crate::Result<ClassifiedBatchRecorded> {
     let fixture: Fixture = serde_json::from_str(fixture).expect("fixture parses");
     let commands = commands(ledger);
     commands.record_ingest_batch(
-        SUBMITTER,
+        submitter,
         batch_id,
         &fixture.batch.agent_tool,
         &fixture.batch.session_id,
@@ -653,4 +663,101 @@ fn who_decided_a_call_relayed_without_its_decider_stays_proposed() {
         "nobody is shown deciding: {deciders:?}"
     );
     assert_eq!(proposer.as_deref(), Some("human:sam"));
+}
+
+/// The decision the first capture of `recorded` became, as the graph reads it.
+fn draft_brief(ledger: &InMemoryEventLedger, recorded: &ClassifiedBatchRecorded) -> DecisionBrief {
+    let decision_id = format!("capture:{}:0", recorded.event_id);
+    get_decision_brief(&graph_of(ledger), &decision_id)
+        .expect("brief reads")
+        .data
+        .expect("decision is in the graph")
+}
+
+/// hivemind-6td5: a draft submitted through the queue carries nothing about who the session was
+/// held with in its own words; it names the submitter of the batch the ledger received, the agent
+/// that ran beside a human, and the session.
+#[test]
+fn a_draft_names_the_session_and_who_it_was_held_with_from_the_received_batch() {
+    let ledger = InMemoryEventLedger::new();
+    let recorded = record_submitted_by(
+        &ledger,
+        DECISION_IN_ITS_OWN_TURN,
+        "batch-human",
+        "human:alex@example.com",
+    )
+    .expect("classification recorded");
+
+    let brief = draft_brief(&ledger, &recorded);
+
+    let drafted = brief
+        .decided_by
+        .drafted_from
+        .expect("a classifier draft says where it was drafted");
+    assert_eq!(drafted.session_ids, ["session-own-turn"]);
+    assert_eq!(
+        drafted.initiated_by.as_deref(),
+        Some("human:alex@example.com")
+    );
+    assert_eq!(
+        drafted.participants,
+        ["agent:claude:hook", "human:alex@example.com"]
+    );
+    // Nobody is credited as the proposer or the decider: the transcript named neither.
+    assert_eq!(brief.decided_by.proposer_id, None);
+    assert!(brief.decided_by.decider_ids.is_empty());
+}
+
+/// Who a session was held with is not a submission's to say: a worker that sends names there has
+/// them dropped from the stored capture and from the graph.
+#[test]
+fn names_a_submission_carries_for_its_session_are_dropped() {
+    let ledger = InMemoryEventLedger::new();
+    let mut fixture: Value = serde_json::from_str(DECISION_IN_ITS_OWN_TURN).expect("parses");
+    fixture["captures"][0]["participants"] = json!(["human:mallory@example.com"]);
+    fixture["captures"][0]["session_initiator"] = json!("human:mallory@example.com");
+
+    let recorded = record_as(&ledger, &fixture.to_string(), "batch-forged-session")
+        .expect("classification recorded");
+
+    let capture = stored_capture(&ledger, &recorded, 0);
+    assert!(capture.get("participants").is_none(), "{capture}");
+    assert!(capture.get("session_initiator").is_none(), "{capture}");
+    let drafted = draft_brief(&ledger, &recorded)
+        .decided_by
+        .drafted_from
+        .expect("a classifier draft");
+    assert_eq!(drafted.initiated_by.as_deref(), Some(SUBMITTER));
+    assert_eq!(drafted.participants, [SUBMITTER]);
+}
+
+/// A classification of a batch the ledger never received (a `hivemind emit` capture) names a
+/// draft with an empty conversation: nothing is guessed, and it is no error.
+#[test]
+fn a_draft_of_an_unreceived_batch_names_no_session_and_nobody() {
+    let ledger = InMemoryEventLedger::new();
+    let mut fixture: Fixture =
+        serde_json::from_str(DECISION_IN_ITS_OWN_TURN).expect("fixture parses");
+    for capture in &mut fixture.captures {
+        capture.source_turn_id = None;
+    }
+    let recorded = commands(&ledger)
+        .record_ingest_batch_classified(
+            RECORDER,
+            &["batch-never-received".to_owned()],
+            "test-model",
+            "2",
+            fixture.captures,
+            None,
+        )
+        .expect("classification recorded");
+
+    let drafted = draft_brief(&ledger, &recorded)
+        .decided_by
+        .drafted_from
+        .expect("a classifier draft");
+
+    assert!(drafted.session_ids.is_empty());
+    assert_eq!(drafted.initiated_by, None);
+    assert!(drafted.participants.is_empty());
 }

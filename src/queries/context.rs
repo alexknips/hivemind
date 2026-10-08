@@ -9,7 +9,7 @@
 //!   agent-only / unknown) via `PROPOSED_BY` and `ACCEPTED_BY` edges.
 //! - `source` / `source_ref`: which system or model captured it (cli/agent/human/slack/…).
 //! - `review`: how substantively the decision was reviewed (unreviewed / self_accepted /
-//!   peer_reviewed / disputed).
+//!   peer_reviewed / disputed / rejected).
 //! - `delegated_by`: the human whose delegation an agent's self-acceptance fell within
 //!   (absent for an agent deciding alone).
 //! - `evidence_count` / `hypothesis_count`: sufficiency of supporting substrate.
@@ -61,6 +61,9 @@ pub enum ReviewShape {
     PeerReviewed,
     /// Both `ACCEPTED_BY` and `REJECTED_BY` actors exist — actively contested.
     Disputed,
+    /// At least one `REJECTED_BY` actor and no `ACCEPTED_BY` actor — someone reviewed it and
+    /// turned it down, and nobody has accepted it. Not `Unreviewed`: a rejection is a review.
+    Rejected,
 }
 
 /// Derived context record for a single decision: the conditions under which it was made.
@@ -314,7 +317,11 @@ fn derive_review(
         return ReviewShape::Disputed;
     }
     if accepted_count == 0 {
-        return ReviewShape::Unreviewed;
+        return if rejected_count > 0 {
+            ReviewShape::Rejected
+        } else {
+            ReviewShape::Unreviewed
+        };
     }
     // accepted_count > 0, rejected_count == 0
     let only_self = match proposer_id {
@@ -345,6 +352,19 @@ fn query_proposer(graph: &impl GraphView, decision_id: &str) -> Result<Option<(S
         let kind = optional_string(row, "kind").unwrap_or_default();
         (actor_id, kind)
     }))
+}
+
+/// The ids of the actors `decision_id` points at with `relation` (a table name such as
+/// `REJECTED_BY` or `INITIATED_BY`), sorted by id.
+pub(super) fn linked_actor_ids(
+    graph: &impl GraphView,
+    decision_id: &str,
+    relation: &str,
+) -> Result<Vec<String>> {
+    Ok(query_actor_ids_by_edge(graph, decision_id, relation)?
+        .into_iter()
+        .map(|(actor_id, _kind)| actor_id)
+        .collect())
 }
 
 /// Returns `(actor_id, kind)` pairs for all actors connected via the given relationship label.

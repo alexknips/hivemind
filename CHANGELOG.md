@@ -636,6 +636,24 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   README say how. On a `hivemind` that has no `--option` (v0.7.0 and older) the helper refuses
   with exit 2 and writes nothing, telling you to upgrade or reword the label, instead of handing
   you the CLI's "a similar argument exists: `--options`", which would split the label.
+- **A draft submitted through the classify queue names the session it came from and who it was
+  held with, and `verify` says why nobody has decided it.** The queue's submit path wrote a
+  worker's captures as sent, so a draft carried no session initiator and no participants: on the
+  city cell 87% of 646 drafts named no one, and the graph held no `INITIATED_BY` or
+  `PARTICIPATED_BY` edge at all. The projector now reads both from the received batches a
+  classification covers: `INITIATED_BY` the submitter of the first batch it names, and
+  `PARTICIPATED_BY` each submitter plus the agent that ran beside a human (`agent:<tool>:hook`;
+  an agent token is already the agent), so a replay names them for drafts already in the ledger.
+  A classification that covers no received batch (a `hivemind emit` capture) names nobody. The
+  write path drops any `participants` and `session_initiator` a submission carries, and the
+  built-in classifier no longer sets them. `verify` and the brief (`decided_by.drafted_from`)
+  print `drafted in: session <id>, started by <actor>, with <actors>`, and, while nobody has
+  accepted a draft, `undecided: a classifier draft is never self-accepted, and the transcript
+  names no one who accepted it`, also when it names a chosen option. A decision someone rejected
+  with nobody accepting it no longer reads as unreviewed: its review shape is the new `rejected`,
+  and `verify` prints `rejected by: <actors>` (`decided_by.rejecter_ids`) instead of "not yet
+  decided". An agent-authored decision a human rejected is no longer marked "not yet reviewed by
+  a human". (hivemind-6td5)
 - **The capture plugin's queue-depth hook counts the queue instead of the reply's keys.**
   `scripts/check-classify-queue.sh` ran `classify-queue list --json | jq length`: against a
   server-backed cell that printed "4 batch(es) pending" for an empty queue (the reply is an

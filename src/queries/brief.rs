@@ -23,13 +23,16 @@ use serde::Serialize;
 use crate::projector::{GraphView, NodeKind};
 use crate::Result;
 
-use super::context::{get_decision_context, ReviewShape};
+use super::context::{get_decision_context, linked_actor_ids, ReviewShape};
 use super::decision::get_decision_with_labels;
 use super::grounding::{grounding_of_at, GroundingItem, GroundingState, UncheckedBet};
 use super::outcome::{get_decision_outcome_with_labels, OutcomeReason};
 use super::project_label::ProjectLabels;
 use super::question::{earliest_ask, other_answers, QuestionAnswer};
-use super::shared::{node_row, optional_datetime, optional_string, query_error, query_timer_start};
+use super::shared::{
+    node_row, optional_datetime, optional_string, optional_string_list, query_error,
+    query_timer_start,
+};
 use super::status::DecisionStatus;
 use super::QueryResponse;
 
@@ -77,6 +80,28 @@ pub struct DecidedBy {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delegated_by: Option<String>,
     pub review: ReviewShape,
+    /// The actor(s) who rejected the decision (`REJECTED_BY` targets). Empty when nobody did.
+    /// With no `decider_ids`, `review == Rejected` and these are who turned it down.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rejecter_ids: Vec<String>,
+    /// Where a decision a classifier drafted from a transcript was held. Present exactly for such
+    /// a draft (a `capture:<offset>:<index>` node), whatever it can say about the conversation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drafted_from: Option<DraftedFrom>,
+}
+
+/// The conversation a classifier drafted a decision from, as the ledger's received batches state
+/// it. Each part is empty when the ledger never received the batches (a `hivemind emit` capture
+/// names a fresh batch id): who was in a conversation is never guessed.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct DraftedFrom {
+    /// The capture sessions that shipped the batches, sorted.
+    pub session_ids: Vec<String>,
+    /// Whoever submitted the session's first batch: the one who started it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initiated_by: Option<String>,
+    /// Every submitter in the session and the agent beside them.
+    pub participants: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -202,7 +227,18 @@ pub(crate) fn get_decision_brief_with_labels(
     let outcome = get_decision_outcome_with_labels(graph, decision_id, now, labels)?
         .data
         .ok_or_else(|| query_error("decision exists but has no outcome"))?;
-    let (occurred_at, expressed_confidence, slug) = decision_capture_facts(graph, decision_id)?;
+    let (occurred_at, expressed_confidence, slug, session_ids) =
+        decision_capture_facts(graph, decision_id)?;
+    let rejecter_ids = if context.rejected_count > 0 {
+        linked_actor_ids(graph, decision_id, "REJECTED_BY")?
+    } else {
+        Vec::new()
+    };
+    let drafted_from = if is_classified_capture(decision_id) {
+        Some(drafted_from(graph, decision_id, session_ids)?)
+    } else {
+        None
+    };
     let grounding = grounding_of_at(graph, decision_id, now)?;
     let (other_answers, asked_at) = match &decision.question_id {
         Some(question_id) => (
@@ -255,6 +291,8 @@ pub(crate) fn get_decision_brief_with_labels(
             source_ref: context.source_ref,
             delegated_by: context.delegated_by,
             review: context.review,
+            rejecter_ids,
+            drafted_from,
         },
         rests_on: grounding.items,
         grounding_state: grounding.state,
@@ -294,20 +332,50 @@ pub(super) fn resolve_option_label(graph: &impl GraphView, option_id: &str) -> R
     })
 }
 
-/// `occurred_at`, `expressed_confidence`, `slug` -- see `decision_capture_facts`.
-type CaptureFacts = (Option<DateTime<Utc>>, Option<String>, Option<String>);
+/// `occurred_at`, `expressed_confidence`, `slug`, `session_ids` -- see `decision_capture_facts`.
+type CaptureFacts = (
+    Option<DateTime<Utc>>,
+    Option<String>,
+    Option<String>,
+    Vec<String>,
+);
 
 /// When the decision was captured (display-only), the confidence its decider expressed then,
-/// and its stable link segment (`slug`, hivemind-nidp).
+/// its stable link segment (`slug`, hivemind-nidp) and the capture sessions that shipped the
+/// batches it was classified from.
 fn decision_capture_facts(graph: &impl GraphView, decision_id: &str) -> Result<CaptureFacts> {
     match node_row(graph, NodeKind::Decision, decision_id)? {
         Some(row) => Ok((
             optional_datetime(&row, "occurred_at")?,
             optional_string(&row, "expressed_confidence"),
             optional_string(&row, "slug"),
+            optional_string_list(&row, "session_ids"),
         )),
-        None => Ok((None, None, None)),
+        None => Ok((None, None, None, Vec::new())),
     }
+}
+
+/// A classifier-drafted decision is a `capture:<offset>:<index>` node, the id the projector gives
+/// a capture of `ingest.batch_classified`.
+fn is_classified_capture(decision_id: &str) -> bool {
+    decision_id.starts_with("capture:")
+}
+
+/// What the graph states of the conversation a classified capture was drafted in: the sessions on
+/// the node, and the `INITIATED_BY` / `PARTICIPATED_BY` actors the projector read from the
+/// batches' submitters.
+fn drafted_from(
+    graph: &impl GraphView,
+    decision_id: &str,
+    session_ids: Vec<String>,
+) -> Result<DraftedFrom> {
+    Ok(DraftedFrom {
+        session_ids,
+        initiated_by: linked_actor_ids(graph, decision_id, "INITIATED_BY")?
+            .into_iter()
+            .next(),
+        participants: linked_actor_ids(graph, decision_id, "PARTICIPATED_BY")?,
+    })
 }
 
 #[cfg(test)]

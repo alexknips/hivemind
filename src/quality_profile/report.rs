@@ -96,8 +96,8 @@ impl Provenance {
     }
 
     fn from_shapes(authorship: AuthorshipShape, review: ReviewShape) -> Self {
-        let unreviewed =
-            authorship == AuthorshipShape::AgentOnly && review != ReviewShape::Disputed;
+        let unreviewed = authorship == AuthorshipShape::AgentOnly
+            && !matches!(review, ReviewShape::Disputed | ReviewShape::Rejected);
         Self {
             authorship,
             review,

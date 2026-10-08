@@ -557,13 +557,14 @@ fn an_acknowledged_finding_is_left_out_and_the_page_is_filled_from_what_remains(
 #[test]
 fn the_provenance_line_appears_for_an_agent_alone_that_nobody_disputed() {
     use AuthorshipShape::{AgentOnly, AgentProposedHumanAccepted, HumanAuthored, Unknown};
-    use ReviewShape::{Disputed, PeerReviewed, SelfAccepted, Unreviewed};
+    use ReviewShape::{Disputed, PeerReviewed, Rejected, SelfAccepted, Unreviewed};
     let table = [
         (AgentOnly, Unreviewed, true),
         (AgentOnly, SelfAccepted, true),
         (AgentOnly, PeerReviewed, true),
         // Someone rejected it: the shape does not say the someone was not a human.
         (AgentOnly, Disputed, false),
+        (AgentOnly, Rejected, false),
         (AgentProposedHumanAccepted, Unreviewed, false),
         (AgentProposedHumanAccepted, PeerReviewed, false),
         (AgentProposedHumanAccepted, Disputed, false),

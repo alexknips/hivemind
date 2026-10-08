@@ -76,6 +76,11 @@ a reader needs without reconstructing them from edges:
     transcript (`capture:<event>:<index>`) has the acceptors and rejecters the classifier named
     and no others: its `actor_id` is who proposed, made or reported it, so it is never read as
     the decider, and a capture that names no acceptor stays `proposed` until a person decides it.
+    Who the conversation was held with is read from the batches the classification covers, never
+    from the submission: the decision is `INITIATED_BY` the submitter of the first batch the
+    classification names and `PARTICIPATED_BY` each batch's submitter and, beside a human, the
+    agent tool that ran (`agent:<tool>:hook`; an agent token is already the agent). A
+    classification that covers no received batch names nobody.
   - `decided_at`: the `decision.proposed` capture event's timestamp, ISO-8601 UTC (the same
     value the query layer calls `occurred_at`, e.g. `DecisionBrief`). A classified capture
     carries the time of the transcript turn it came from when it names one that has a time

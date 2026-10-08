@@ -1028,3 +1028,131 @@ fn the_importance_summary_of_an_empty_ledger_says_there_is_nothing_to_rank() -> 
     assert_eq!(render_importance_summary(&report), "No decisions to rank");
     Ok(())
 }
+
+/// hivemind-6td5: a decision someone rejected and nobody accepted is not "not yet decided".
+#[test]
+fn brief_names_who_rejected_a_decision_nobody_accepted() -> Result<()> {
+    let scenario = Scenario::new();
+    scenario.decision(
+        "d:logo",
+        "Pick a logo",
+        "agent:claude:crew",
+        "2026-01-01T00:00:00Z",
+    )?;
+    scenario.reject("d:logo", "human:dana", "2026-01-01T00:00:01Z")?;
+
+    let text = brief_text(&scenario.graph()?, "d:logo")?;
+
+    assert!(
+        text.contains("  rejected by: human:dana (review=Rejected) -- nobody has accepted it\n"),
+        "{text}"
+    );
+    assert!(!text.contains("not yet decided"), "{text}");
+    Ok(())
+}
+
+/// hivemind-6td5 + hivemind-d6ar + hivemind-2gbo: a decision with options, no choice and a
+/// rejection names who turned the decision down and still lists the options as open, never as
+/// rejected options, with a label that holds a comma set apart in quotes so it counts as one.
+#[test]
+fn brief_of_a_rejected_decision_with_options_and_no_choice_reads_right_under_all_rules(
+) -> Result<()> {
+    let scenario = Scenario::new();
+    scenario.proposal(
+        "agent:claude:crew",
+        "2026-01-01T00:00:00Z",
+        serde_json::json!({
+            "decision_id": "d:cadence",
+            "title": "Checker report cadence",
+            "rationale": "Daily or weekly; nobody has decided yet",
+            "topic_keys": ["reports"],
+            "option_ids": ["opt:1", "opt:2"],
+            "option_labels": ["Daily", "Weekly, on Fridays"],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    )?;
+    scenario.reject("d:cadence", "human:dana", "2026-01-01T00:00:01Z")?;
+
+    let text = brief_text(&scenario.graph()?, "d:cadence")?;
+
+    assert!(
+        text.contains("  rejected by: human:dana (review=Rejected) -- nobody has accepted it\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("  options: Daily, \"Weekly, on Fridays\" (open — no choice is recorded)\n"),
+        "{text}"
+    );
+    assert!(!text.contains("  rejected: "), "{text}");
+    assert!(!text.contains("not yet decided"), "{text}");
+    assert!(!text.contains("  chose:"), "{text}");
+    Ok(())
+}
+
+/// hivemind-6td5: a classifier draft says which conversation it came from and with whom, as the
+/// received batch states it, and why nobody has decided it.
+#[test]
+fn brief_of_a_classifier_draft_says_where_it_was_drafted_and_why_nobody_decided() -> Result<()> {
+    let scenario = Scenario::new();
+    scenario.received_batch("batch:1", "sess-1", "2026-06-01T00:00:00Z")?;
+    let draft = scenario.classified_decision(
+        "agent:claude:classifier",
+        "2026-06-01T00:01:00Z",
+        "Use the queue",
+        None,
+    )?;
+
+    let text = brief_text(&scenario.graph()?, &draft)?;
+
+    assert!(
+        text.contains(
+            "  drafted in: session sess-1, started by agent:claude:hook, with agent:claude:hook\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "  undecided: a classifier draft is never self-accepted, and the transcript names no one who accepted it\n"
+        ),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// A draft from a conversation the ledger never received says nothing about who was in it.
+#[test]
+fn brief_of_a_draft_from_an_unreceived_conversation_does_not_guess_who_was_there() -> Result<()> {
+    let scenario = Scenario::new();
+    let draft = scenario.classified_decision(
+        "agent:claude:classifier",
+        "2026-06-01T00:01:00Z",
+        "Use the queue",
+        None,
+    )?;
+
+    let text = brief_text(&scenario.graph()?, &draft)?;
+
+    assert!(!text.contains("drafted in:"), "{text}");
+    assert!(text.contains("  undecided: a classifier draft"), "{text}");
+    Ok(())
+}
+
+/// A hand-proposed decision nobody has accepted is unreviewed, but it is no classifier draft.
+#[test]
+fn brief_of_a_hand_proposed_decision_makes_no_classifier_draft_claim() -> Result<()> {
+    let scenario = Scenario::new();
+    scenario.decision(
+        "d:logo",
+        "Pick a logo",
+        "human:alex",
+        "2026-01-01T00:00:00Z",
+    )?;
+
+    let text = brief_text(&scenario.graph()?, "d:logo")?;
+
+    assert!(!text.contains("drafted in:"), "{text}");
+    assert!(!text.contains("undecided:"), "{text}");
+    Ok(())
+}

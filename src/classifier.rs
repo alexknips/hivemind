@@ -666,33 +666,8 @@ struct BatchInfo {
     event_id: u64,
     batch_id: String,
     batch_text: String,
-    /// actor_id from the IngestBatchReceived event (the batch submitter).
-    actor_id: String,
-    agent_tool: String,
     /// The `turn_id` of every turn in the batch: the ids a capture's `source_turn_id` may name.
     turn_ids: Vec<String>,
-}
-
-/// The session's own agent actor, distinct from whoever (human or agent) actually
-/// answered within the transcript — `CaptureItem.actor_id`, extracted by the
-/// classifier only when explicitly named in the text, is what credits the latter.
-///
-/// Prefers `batch_actor_id` when it is already agent-shaped: once a token is
-/// minted through the agent-token path (`agent:<tool>:<name>`, hivemind-zdsh.19)
-/// it IS the stable agent identity and needs no further synthesis. Otherwise
-/// falls back to a per-tool identity. Never folds the raw per-run session id into
-/// this id: that makes the same physical agent look like a different actor after
-/// every restart (hivemind-zdsh.9), which is exactly the failure this exists to
-/// avoid.
-fn session_agent_actor(batch_actor_id: &str, agent_tool: &str) -> Option<String> {
-    if batch_actor_id.starts_with("agent:") {
-        return Some(batch_actor_id.to_owned());
-    }
-    let agent_tool = agent_tool.trim();
-    if agent_tool.is_empty() {
-        return None;
-    }
-    Some(format!("agent:{agent_tool}:hook"))
 }
 
 async fn classify_pending_batches(
@@ -712,55 +687,36 @@ async fn classify_pending_batches(
     for batch in batches {
         debug!(target: "hivemind::classifier", batch_id = %batch.batch_id, "classifying batch");
 
-        let session_initiator: Option<String> = if batch.actor_id.is_empty() {
-            None
-        } else {
-            Some(batch.actor_id.clone())
-        };
-
-        let agent_actor_id = session_agent_actor(&batch.actor_id, &batch.agent_tool);
-
         match call_haiku(client, api_key, &batch.batch_text).await {
             Ok((output, model)) => {
                 let captures: Vec<CaptureItem> = output
                     .captures
                     .into_iter()
-                    .map(|r| {
-                        let mut participants: Vec<String> = Vec::new();
-                        if let Some(ref initiator) = session_initiator {
-                            participants.push(initiator.clone());
-                        }
-                        if let Some(ref agent) = agent_actor_id {
-                            if !participants.contains(agent) {
-                                participants.push(agent.clone());
-                            }
-                        }
-                        CaptureItem {
-                            kind: r.kind,
-                            title: r.title,
-                            rationale: r.rationale,
-                            topic_keys: r.topic_keys,
-                            evidence_ids: r.evidence_ids,
-                            options: r.options,
-                            chosen_option: r.chosen_option,
-                            extraction_confidence: r.extraction_confidence,
-                            expressed_confidence: r.expressed_confidence,
-                            supersedes_id: r.supersedes_id,
-                            premised_on_ids: r.premised_on_ids,
-                            supports_ids: r.supports_ids,
-                            refutes_ids: r.refutes_ids,
-                            actor_id: r.actor_id,
-                            accepted_by: r.accepted_by,
-                            rejected_by: r.rejected_by,
-                            blocked_actor_id: r.blocked_actor_id,
-                            decision_id: r.decision_id,
-                            participants,
-                            restates_id: None,
-                            source_turn_id: r.source_turn_id,
-                            source_ts: None,
-                            question: r.question,
-                            session_initiator: session_initiator.clone(),
-                        }
+                    .map(|r| CaptureItem {
+                        kind: r.kind,
+                        title: r.title,
+                        rationale: r.rationale,
+                        topic_keys: r.topic_keys,
+                        evidence_ids: r.evidence_ids,
+                        options: r.options,
+                        chosen_option: r.chosen_option,
+                        extraction_confidence: r.extraction_confidence,
+                        expressed_confidence: r.expressed_confidence,
+                        supersedes_id: r.supersedes_id,
+                        premised_on_ids: r.premised_on_ids,
+                        supports_ids: r.supports_ids,
+                        refutes_ids: r.refutes_ids,
+                        actor_id: r.actor_id,
+                        accepted_by: r.accepted_by,
+                        rejected_by: r.rejected_by,
+                        blocked_actor_id: r.blocked_actor_id,
+                        decision_id: r.decision_id,
+                        participants: Vec::new(),
+                        restates_id: None,
+                        source_turn_id: r.source_turn_id,
+                        source_ts: None,
+                        question: r.question,
+                        session_initiator: None,
                     })
                     .collect();
 
@@ -862,18 +818,10 @@ fn find_unclassified_batches(
                                     "batch {batch_id} has no renderable turns; will classify empty text"
                                 );
                             }
-                            let agent_tool = event
-                                .payload
-                                .get("agent_tool")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_owned();
                             received.push(BatchInfo {
                                 event_id,
                                 batch_id: batch_id.to_owned(),
                                 batch_text,
-                                actor_id: event.actor_id.clone(),
-                                agent_tool,
                                 turn_ids: turn_ids(event),
                             });
                         }
@@ -1020,9 +968,8 @@ async fn call_haiku(
     Ok((output, model))
 }
 
-/// Map raw schema-shaped output into the shared `CaptureItem` type, with no
-/// participant/session-initiator provenance (only the ledger-write path in
-/// `classify_pending_batches` has that context).
+/// Map raw schema-shaped output into the shared `CaptureItem` type. Who the session was held
+/// with is not the classifier's to say: the projector reads it from the received batches.
 fn raw_captures_to_items(captures: Vec<CaptureItemRaw>) -> Vec<CaptureItem> {
     captures
         .into_iter()

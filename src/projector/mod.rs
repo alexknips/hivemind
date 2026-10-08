@@ -20,7 +20,7 @@ use crate::events::{
 use crate::ledger::EventLedger;
 use crate::Result;
 
-use batch_times::ReceivedBatches;
+use batch_times::{ClassifiedSession, ReceivedBatches};
 use option_labels::{readable_option_labels, FoundLabel};
 
 pub mod arrow;
@@ -419,7 +419,7 @@ fn project_event_reporting(
             &payload,
             &origin_properties,
             classified_batch_time(event, received_batches),
-            &classified_session_ids(event, received_batches),
+            &classified_session(event, received_batches),
         )?,
         EventPayload::DecisionScored(payload) => {
             project_decision_scored(graph, &payload, &origin_properties)?
@@ -556,7 +556,7 @@ pub fn project_captures_in_memory(id_captures: &[(&str, &CaptureItem)]) -> Resul
             None,
             &GraphProperties::default(),
             GraphValue::Null,
-            &[],
+            &ClassifiedSession::default(),
         )?;
     }
     let (nodes_map, edges) = graph.nodes_and_edges()?;
@@ -909,11 +909,12 @@ fn classified_batch_time(event: &Event, received_batches: &ReceivedBatches) -> G
         )
 }
 
-/// The capture sessions that shipped the batches a classification covers, as the received
-/// batches name them (`session_id`); empty when it covers none the replay has received, as for a
-/// `hivemind emit` capture, which names a fresh batch id.
-fn classified_session_ids(event: &Event, received_batches: &ReceivedBatches) -> Vec<String> {
-    received_batches.sessions(&classified_batch_ids(&event.payload))
+/// The conversation the batches a classification covers were shipped from, as the received
+/// batches state it: their capture sessions (`session_id`), who submitted the first and who took
+/// part. Empty when it covers none the replay has received, as for a `hivemind emit` capture,
+/// which names a fresh batch id.
+fn classified_session(event: &Event, received_batches: &ReceivedBatches) -> ClassifiedSession {
+    received_batches.session(&classified_batch_ids(&event.payload))
 }
 
 fn relation_kind(kind: EventRelationKind) -> RelationKind {
@@ -1900,8 +1901,8 @@ fn project_notification_acknowledged(
 /// `batch_time` is the time a decision it captured is recorded at unless the capture carries its
 /// turn's own time: the newest turn time of the batches classified, or the classified-batch
 /// event's own timestamp when none carries one (see `classified_batch_time` and
-/// `project_capture_decision`). `session_ids` are the capture sessions that shipped those batches
-/// (see `classified_session_ids`).
+/// `project_capture_decision`). `session` is the conversation those batches were shipped from
+/// (see `classified_session`).
 fn project_ingest_batch_classified(
     graph: &impl GraphView,
     event_origin: i64,
@@ -1909,7 +1910,7 @@ fn project_ingest_batch_classified(
     payload: &IngestBatchClassifiedPayload,
     origin_properties: &GraphProperties,
     batch_time: GraphValue,
-    session_ids: &[String],
+    session: &ClassifiedSession,
 ) -> Result<()> {
     let node_ids: Vec<String> = (0..payload.captures.len())
         .map(|idx| format!("capture:{event_origin}:{idx}"))
@@ -1928,7 +1929,7 @@ fn project_ingest_batch_classified(
             Some(recorder),
             origin_properties,
             batch_time.clone(), // ubs:ignore: one timestamp per capture; the value is a short string
-            session_ids,
+            session,
         )?;
     }
     Ok(())
@@ -2095,9 +2096,8 @@ fn project_decision_retitled(
 /// projection has none): a captured decision belongs to their personal project, the same rule
 /// `project_decision_proposed` applies to a proposal that names no project. `batch_time` is the
 /// time of the batch the capture was classified from (see `classified_batch_time`; `Null` when
-/// there is none, as in the in-memory projection). `session_ids` are the capture sessions the
-/// classified batches were shipped by (see `classified_session_ids`); only a decision carries
-/// them.
+/// there is none, as in the in-memory projection). `session` is the conversation the classified
+/// batches were shipped from (see `classified_session`); only a decision carries it.
 fn project_capture(
     graph: &impl GraphView,
     capture: &CaptureItem,
@@ -2105,7 +2105,7 @@ fn project_capture(
     recorder: Option<&str>,
     origin_properties: &GraphProperties,
     batch_time: GraphValue,
-    session_ids: &[String],
+    session: &ClassifiedSession,
 ) -> Result<()> {
     match capture.kind.as_str() {
         "decision" => project_capture_decision(
@@ -2115,7 +2115,7 @@ fn project_capture(
             recorder,
             origin_properties,
             batch_time,
-            session_ids,
+            session,
         ),
         "evidence" => project_capture_evidence(graph, capture, node_id, origin_properties),
         "hypothesis" => project_capture_hypothesis(graph, capture, node_id, origin_properties),
@@ -2150,10 +2150,16 @@ fn project_capture(
 /// `actor_id` is a human. Judging who decided belongs to the classifier (layer 3), not the
 /// projector.
 ///
-/// `session_ids` (the capture sessions that shipped the classified batches) are stored on the
-/// decision beside its `event_origin`: decisions of one conversation share a session even when
-/// the classifier recorded that conversation in more than one event. Nothing is stored when no
-/// covered batch was received.
+/// `session.session_ids` (the capture sessions that shipped the classified batches) are stored
+/// on the decision beside its `event_origin`: decisions of one conversation share a session even
+/// when the classifier recorded that conversation in more than one event. Nothing is stored when
+/// no covered batch was received.
+///
+/// Who the session was held with is what the received batches state, whoever wrote the
+/// classification: `INITIATED_BY` the first batch's submitter and `PARTICIPATED_BY` each
+/// submitter and the agent beside them. A queue submission carries no such names, and the
+/// classifier is not asked for them. A capture that carries its own (an event written before this
+/// was read from the batches) keeps them, and the batches' are added.
 fn project_capture_decision(
     graph: &impl GraphView,
     capture: &CaptureItem,
@@ -2161,7 +2167,7 @@ fn project_capture_decision(
     recorder: Option<&str>,
     origin_properties: &GraphProperties,
     batch_time: GraphValue,
-    session_ids: &[String],
+    session: &ClassifiedSession,
 ) -> Result<()> {
     let mut props = origin_properties.clone();
     let occurred_at = capture
@@ -2190,10 +2196,10 @@ fn project_capture_decision(
         "topic_keys".to_owned(),
         GraphValue::StringList(capture.topic_keys.clone()),
     );
-    if !session_ids.is_empty() {
+    if !session.session_ids.is_empty() {
         props.insert(
             "session_ids".to_owned(),
-            GraphValue::StringList(session_ids.to_vec()),
+            GraphValue::StringList(session.session_ids.clone()),
         );
     }
     props.insert(
@@ -2280,7 +2286,13 @@ fn project_capture_decision(
             origin_properties,
         )?;
     }
-    for participant_id in &capture.participants {
+    let mut participants: Vec<&String> = capture.participants.iter().collect();
+    for participant_id in &session.participants {
+        if !participants.contains(&participant_id) {
+            participants.push(participant_id);
+        }
+    }
+    for participant_id in participants {
         upsert_actor(graph, participant_id, origin_properties)?;
         graph.upsert_edge(
             RelationKind::ParticipatedBy,
@@ -2289,7 +2301,11 @@ fn project_capture_decision(
             origin_properties,
         )?;
     }
-    if let Some(initiator_id) = &capture.session_initiator {
+    if let Some(initiator_id) = capture
+        .session_initiator
+        .as_ref()
+        .or(session.initiator.as_ref())
+    {
         upsert_actor(graph, initiator_id, origin_properties)?;
         graph.upsert_edge(
             RelationKind::InitiatedBy,

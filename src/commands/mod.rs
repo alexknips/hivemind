@@ -168,6 +168,12 @@
 //!   classification's own. A capture that names no turn, or whose turn carries no time, keeps
 //!   the classification's time: nothing is guessed. `source_ts` is never taken from the caller;
 //!   whatever a submission carries there is replaced.
+//! - `participants` and `session_initiator` are never taken from the caller: whatever a
+//!   submission carries there is dropped. The projector reads who the session was held with from
+//!   the received batches the classification covers (`INITIATED_BY` the first batch's submitter,
+//!   `PARTICIPATED_BY` each submitter and the agent beside them), so a draft names only people
+//!   and agents the ledger received the conversation from. A classification that covers no
+//!   received batch names none.
 //! - `question` is allowed only on a `decision` or a `decision-request` and must contain words,
 //!   not only punctuation; otherwise the whole classification is refused before the first write.
 //! - A `decision-request` that states a `question` and names a turn with a time writes one
@@ -1463,6 +1469,11 @@ impl<'a, L: EventLedger> Commands<'a, L> {
     /// A capture may also name the turn it came from and the question it asks or answers
     /// (`CaptureItem::source_turn_id`, `question`); the rules are in the module header
     /// ("Transcript captures").
+    ///
+    /// Who the session was held with is not a submission's to say: whatever a capture carries in
+    /// `participants` and `session_initiator` is dropped, and the projector reads both from the
+    /// batches the classification covers, so a draft names the people and agents the ledger
+    /// received the conversation from and nobody a worker thought it saw.
     pub fn record_ingest_batch_classified(
         &self,
         actor_id: &str,
@@ -1482,6 +1493,10 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         require_non_empty("classifier_model", classifier_model)?;
         require_non_empty("schema_version", schema_version)?;
 
+        for capture in &mut captures {
+            capture.participants.clear();
+            capture.session_initiator = None;
+        }
         let asks = self.plan_transcript_asks(batch_ids, &mut captures)?;
         let (captures, restated) = self.settle_restatements(batch_ids, captures)?;
         let recorded_count = captures.len();

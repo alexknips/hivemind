@@ -696,11 +696,13 @@ pub struct CaptureItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision_id: Option<String>,
     /// All actor IDs that participated in the session producing this capture (human + agent).
-    /// Auto-populated from batch metadata; not LLM-extracted.
+    /// Read from the batches the classification covers when the graph is projected, never from a
+    /// submission: `record_ingest_batch_classified` drops whatever a caller sends here. Only an
+    /// event written before that carries it, and the projector still reads it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub participants: Vec<String>,
-    /// Actor ID of whoever initiated the session (the batch submitter).
-    /// Auto-populated from batch metadata; not LLM-extracted.
+    /// Actor ID of whoever initiated the session (the batch submitter). Read from the batches
+    /// like `participants`, and dropped from a submission the same way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_initiator: Option<String>,
 }
@@ -778,6 +780,28 @@ pub fn received_batch_session_id(payload: &serde_json::Value) -> Option<&str> {
         .get("session_id")
         .and_then(|id| id.as_str())
         .filter(|id| !id.trim().is_empty())
+}
+
+/// The session's own agent actor, distinct from whoever (human or agent) actually
+/// answered within the transcript — `CaptureItem.actor_id`, extracted by the
+/// classifier only when explicitly named in the text, is what credits the latter.
+///
+/// Prefers `batch_actor_id` when it is already agent-shaped: once a token is
+/// minted through the agent-token path (`agent:<tool>:<name>`, hivemind-zdsh.19)
+/// it IS the stable agent identity and needs no further synthesis. Otherwise
+/// falls back to a per-tool identity. Never folds the raw per-run session id into
+/// this id: that makes the same physical agent look like a different actor after
+/// every restart (hivemind-zdsh.9), which is exactly the failure this exists to
+/// avoid.
+pub fn session_agent_actor(batch_actor_id: &str, agent_tool: &str) -> Option<String> {
+    if batch_actor_id.starts_with("agent:") {
+        return Some(batch_actor_id.to_owned());
+    }
+    let agent_tool = agent_tool.trim();
+    if agent_tool.is_empty() {
+        return None;
+    }
+    Some(format!("agent:{agent_tool}:hook"))
 }
 
 /// One scored quality dimension: score in [0,1] plus a human-readable explanation.

@@ -22,13 +22,13 @@ use crate::queries::{
     oriented_edges, BlockerNotificationCandidates, ChangedDecisionsResults, CompactView, Contest,
     ContestedDecisionsResults, DecidedBy, DecisionBlockerResults, DecisionBrief,
     DecisionSearchResults, DecisionStatus, DecisionTimeline, DecisionView,
-    DecisionsAddedSinceResults, DecisionsChangedSinceResults, GroundingAdded, GroundingItem,
-    GroundingItemState, GroundingKind, GroundingState, HistoryChangeKind, HypothesisStatus,
-    MatchReason, MisfiledDecisionCandidate, NeighborhoodView, OptionLabel, OutcomeReason,
-    ProjectDecisionsOutcome, ProjectDecisionsPage, ProjectListResults, ProjectMove, ProjectOutcome,
-    ProjectTopicFact, QueryResponse, QuestionAnswer, ReadOnlyExport,
+    DecisionsAddedSinceResults, DecisionsChangedSinceResults, DraftedFrom, GroundingAdded,
+    GroundingItem, GroundingItemState, GroundingKind, GroundingState, HistoryChangeKind,
+    HypothesisStatus, MatchReason, MisfiledDecisionCandidate, NeighborhoodView, OptionLabel,
+    OutcomeReason, ProjectDecisionsOutcome, ProjectDecisionsPage, ProjectListResults, ProjectMove,
+    ProjectOutcome, ProjectTopicFact, QueryResponse, QuestionAnswer, ReadOnlyExport,
     ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
-    RecentActivityResults, RecentDecisionsResults, ResolveOutcome, ResolvedCandidate,
+    RecentActivityResults, RecentDecisionsResults, ResolveOutcome, ResolvedCandidate, ReviewShape,
     SituationalResults, SupersessionChain, TimelineEntry, TimelineFact, TitleChange,
     WaitingRequestsResults, POLARITY_REASON,
 };
@@ -973,10 +973,24 @@ fn write_decision_brief(output: &mut String, brief: &DecisionBrief) {
 /// wrote the decision down (`PROPOSED_BY`), the decider is whoever actually made the call
 /// (`ACCEPTED_BY`). Collapsed to one "decided by" line only on self-acceptance, where
 /// they're the same actor; an unreviewed decision says so honestly instead of implying the
-/// recorder decided.
+/// recorder decided, and a rejected one names who turned it down rather than reading as
+/// unreviewed.
 fn write_decided_by(output: &mut String, decided_by: &DecidedBy) {
     let recorder = decided_by.proposer_id.as_deref().unwrap_or("unknown");
     match decided_by.decider_ids.as_slice() {
+        [] if decided_by.review == ReviewShape::Rejected => {
+            let _ = writeln!(
+                output,
+                "  recorded by: {} (source={})",
+                recorder, decided_by.source
+            );
+            let _ = writeln!(
+                output,
+                "  rejected by: {} (review={:?}) -- nobody has accepted it",
+                decided_by.rejecter_ids.join(", "),
+                decided_by.review
+            );
+        }
         [] => {
             let _ = writeln!(
                 output,
@@ -1010,6 +1024,35 @@ fn write_decided_by(output: &mut String, decided_by: &DecidedBy) {
     // with an agent that decided alone (which has no such line).
     if let Some(delegated_by) = decided_by.delegated_by.as_deref() {
         let _ = writeln!(output, "  delegated by: {delegated_by}");
+    }
+    if let Some(drafted) = &decided_by.drafted_from {
+        write_drafted_from(output, decided_by, drafted);
+    }
+}
+
+/// Where a classifier-drafted decision was held, as far as the ledger states it, and, while
+/// nobody has accepted it, why it is still open. A draft records what a transcript says and is
+/// never accepted on anyone's behalf, even when it names a chosen option; an unreceived
+/// conversation prints no "drafted in" line rather than a guess.
+fn write_drafted_from(output: &mut String, decided_by: &DecidedBy, drafted: &DraftedFrom) {
+    let mut held: Vec<String> = Vec::new();
+    if !drafted.session_ids.is_empty() {
+        held.push(format!("session {}", drafted.session_ids.join(", ")));
+    }
+    if let Some(initiator) = &drafted.initiated_by {
+        held.push(format!("started by {initiator}"));
+    }
+    if !drafted.participants.is_empty() {
+        held.push(format!("with {}", drafted.participants.join(", ")));
+    }
+    if !held.is_empty() {
+        let _ = writeln!(output, "  drafted in: {}", held.join(", "));
+    }
+    if decided_by.decider_ids.is_empty() && decided_by.review != ReviewShape::Rejected {
+        let _ = writeln!(
+            output,
+            "  undecided: a classifier draft is never self-accepted, and the transcript names no one who accepted it"
+        );
     }
 }
 

@@ -817,7 +817,7 @@ separate query functions:
   (who *recorded* it), `accepted_by` (who actually *decided* — may differ
   from `proposer_id`, or be empty when unreviewed; hivemind-zdsh.9),
   `source`, `source_ref`, `review: ReviewShape` (unreviewed / self_accepted /
-  peer_reviewed / disputed), and `delegated_by` (the human whose delegated
+  peer_reviewed / disputed / rejected), and `delegated_by` (the human whose delegated
   scope an agent's self-acceptance fell within; absent when the agent decided
   alone — hivemind-zdsh.6) — this is "who decided."
 - `get_decision_outcome` (`outcome.rs:94`) → `DecisionOutcome`: `held_up`
@@ -868,7 +868,7 @@ pub struct DecisionBrief {
 }
 
 pub struct OptionLabel { pub option_id: String, pub label: String, pub recorded_as: Option<String> } // recorded_as: what the capture recorded, when `label` reads it differently (slug -> words); absent otherwise
-pub struct DecidedBy { pub proposer_id: Option<String>, pub decider_ids: Vec<String>, pub source: String, pub source_ref: Option<String>, pub delegated_by: Option<String>, pub review: ReviewShape }
+pub struct DecidedBy { pub proposer_id: Option<String>, pub decider_ids: Vec<String>, pub source: String, pub source_ref: Option<String>, pub delegated_by: Option<String>, pub review: ReviewShape, pub rejecter_ids: Vec<String> /* REJECTED_BY actors; empty when none */, pub drafted_from: Option<DraftedFrom> /* a classifier draft only: the session, who started it, who took part, as the received batches state them */ }
 pub struct StillHolds { pub held_up: bool, pub reasons: Vec<OutcomeReason>, pub unchecked: Vec<UncheckedBet> }
 ```
 

@@ -941,7 +941,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "get_decision_context",
-            "description": "Derive the context record for a single decision: the conditions under which it was made. Returns five feature groups — authorship shape (human-authored / agent-proposed+human-accepted / agent-only / unknown) with proposer_id (who recorded it) and accepted_by (who actually decided — may differ from proposer_id, or be empty when unreviewed), source system and model/session reference, review depth (unreviewed / self_accepted / peer_reviewed / disputed), evidence and hypothesis counts, and context richness proxies (options count, rationale character count). No LLM involved; derived purely from graph edges. Pair with get_decision_outcome for causal attribution. Returns null when the decision_id is not found.",
+            "description": "Derive the context record for a single decision: the conditions under which it was made. Returns five feature groups — authorship shape (human-authored / agent-proposed+human-accepted / agent-only / unknown) with proposer_id (who recorded it) and accepted_by (who actually decided — may differ from proposer_id, or be empty when unreviewed), source system and model/session reference, review depth (unreviewed / self_accepted / peer_reviewed / disputed / rejected), evidence and hypothesis counts, and context richness proxies (options count, rationale character count). No LLM involved; derived purely from graph edges. Pair with get_decision_outcome for causal attribution. Returns null when the decision_id is not found.",
             "inputSchema": {
                 "type": "object",
                 "required": ["decision_id"],
