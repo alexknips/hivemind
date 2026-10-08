@@ -544,3 +544,151 @@ async fn why_and_verify_answer_the_same_through_the_cli_the_plugin_http_and_mcp(
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
+
+/// The labels listed under `key` of a brief, sorted (the order options come back in is not part
+/// of the answer).
+fn listed_options(brief: &Value, key: &str) -> Vec<String> {
+    let mut labels: Vec<String> = brief[key]
+        .as_array()
+        .map(|options| {
+            options
+                .iter()
+                .filter_map(|option| option["label"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    labels.sort();
+    labels
+}
+
+/// The brief inside a reply: `why` nests it under `root`, `verify` is the brief itself.
+fn brief_of<'a>(verb: &str, envelope: &'a Value) -> &'a Value {
+    if verb == "why" {
+        &envelope["data"]["root"]
+    } else {
+        &envelope["data"]
+    }
+}
+
+/// An option is rejected only against a choice (hivemind-d6ar). A decision captured with its
+/// options and no choice lists them as open on every surface, and a decision with a choice still
+/// lists the options it turned down.
+#[tokio::test]
+async fn a_decision_with_no_choice_lists_its_options_as_open_through_every_surface(
+) -> TestResult<()> {
+    let dir = unique_temp_dir("read-surface-parity-open-options");
+    let path = dir.to_str().ok_or("the ledger path is utf-8")?;
+    for (title, rationale, topics, options, chose) in [
+        (
+            "Checker report cadence: daily or weekly",
+            "How often should the checker report? Nobody has decided yet, the mayor will pick",
+            "reports",
+            "Daily,Weekly",
+            None,
+        ),
+        (
+            "Ledger storage backend is shared Postgres",
+            "One shared ledger keeps every reader consistent without per-host sync",
+            "storage",
+            "Shared Postgres,Per-host SQLite",
+            Some("Shared Postgres"),
+        ),
+    ] {
+        let mut args = vec![
+            "hivemind",
+            "--actor",
+            "human:alice",
+            "--hivemind-dir",
+            path,
+            "emit",
+            "decision.proposed",
+            "--title",
+            title,
+            "--rationale",
+            rationale,
+            "--topic-keys",
+            topics,
+            "--options",
+            options,
+        ];
+        if let Some(chose) = chose {
+            args.extend(["--chose", chose]);
+        }
+        run(&Cli::parse_from(args))?;
+    }
+    let mut mcp = McpServer::start(&dir)?;
+
+    for (verb, question, open, rejected, chosen) in [
+        (
+            "why",
+            "checker report cadence",
+            vec!["Daily", "Weekly"],
+            vec![],
+            None,
+        ),
+        (
+            "verify",
+            "checker report cadence",
+            vec!["Daily", "Weekly"],
+            vec![],
+            None,
+        ),
+        (
+            "why",
+            "ledger storage backend",
+            vec![],
+            vec!["Per-host SQLite"],
+            Some("Shared Postgres"),
+        ),
+        (
+            "verify",
+            "ledger storage backend",
+            vec![],
+            vec!["Per-host SQLite"],
+            Some("Shared Postgres"),
+        ),
+    ] {
+        let cli = without_latency(via_cli(&dir, verb, question)?);
+        let plugin = without_latency(via_plugin(&dir, verb, question)?);
+        let from_mcp = without_latency(mcp.call(mcp_tool(verb), question)?);
+        let (status, http) = via_http(&dir, verb, question).await?;
+        assert_eq!(status, StatusCode::OK, "{verb} {question:?}: {http}");
+
+        let brief = brief_of(verb, &cli);
+        assert_eq!(
+            listed_options(brief, "open_options"),
+            open,
+            "{verb} {question:?}: {cli}"
+        );
+        assert_eq!(
+            listed_options(brief, "rejected_options"),
+            rejected,
+            "{verb} {question:?}: {cli}"
+        );
+        assert_eq!(
+            brief["chosen_option"]["label"].as_str(),
+            chosen,
+            "{verb} {question:?}: {cli}"
+        );
+        if chosen.is_some() {
+            assert!(
+                brief.get("open_options").is_none(),
+                "a decision with a choice has no open options: {cli}"
+            );
+        }
+
+        assert_eq!(
+            plugin, cli,
+            "{verb} {question:?}: the plugin's reply differs"
+        );
+        assert_eq!(from_mcp, cli, "{verb} {question:?}: the MCP reply differs");
+        assert_eq!(
+            without_latency(http),
+            cli,
+            "{verb} {question:?}: the HTTP reply differs"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}

@@ -304,6 +304,61 @@ fn brief_names_an_overdue_bet_as_unchecked_without_saying_the_decision_is_stale(
     Ok(())
 }
 
+#[test]
+fn brief_lists_options_with_no_choice_as_open_and_none_as_rejected() -> Result<()> {
+    // hivemind-d6ar: an option is turned down only against a choice. A decision captured with
+    // its options and no pick is an open question, not one that rejected everything.
+    let graph = graph_from_events([event(
+        1,
+        EventType::DecisionProposed,
+        "human:alice",
+        json!({
+            "decision_id": "d:open",
+            "title": "Checker report cadence",
+            "rationale": "Daily or weekly; nobody has decided yet",
+            "topic_keys": ["reports"],
+            "option_ids": ["opt:1", "opt:2"],
+            "option_labels": ["Daily", "Weekly"],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    )])?;
+
+    let brief = get_decision_brief(&graph, "d:open")?
+        .data
+        .expect("decision exists");
+
+    assert_eq!(brief.chosen_option, None);
+    assert!(brief.rejected_options.is_empty(), "{brief:?}");
+    let open: Vec<&str> = brief
+        .open_options
+        .iter()
+        .map(|option| option.label.as_str())
+        .collect();
+    assert_eq!(open, vec!["Daily", "Weekly"]);
+    let json = serde_json::to_value(&brief).expect("brief serializes");
+    assert_eq!(json["rejected_options"], json!([]));
+    assert_eq!(json["open_options"][1]["label"], "Weekly");
+    assert!(json.get("chosen_option").is_none(), "{json}");
+    Ok(())
+}
+
+#[test]
+fn brief_with_a_choice_has_no_open_options_and_says_none() -> Result<()> {
+    let graph = graph_from_events([option_labelled_decision("d:chosen", &["Direct", "Queued"])])?;
+
+    let brief = get_decision_brief(&graph, "d:chosen")?
+        .data
+        .expect("decision exists");
+
+    assert!(brief.open_options.is_empty());
+    assert_eq!(brief.rejected_options.len(), 1);
+    let json = serde_json::to_value(&brief).expect("brief serializes");
+    assert!(json.get("open_options").is_none(), "{json}");
+    Ok(())
+}
+
 fn option_labelled_decision(decision_id: &str, labels: &[&str]) -> Event {
     let option_ids: Vec<String> = (1..=labels.len()).map(|n| format!("opt:{n}")).collect();
     event(
@@ -410,8 +465,10 @@ fn brief_says_nothing_about_a_record_that_reads_as_recorded() -> Result<()> {
     let brief = get_decision_brief(&graph, "d:legacy")?
         .data
         .expect("decision exists");
+    // No option is chosen here, so none of them was turned down: they are open.
+    assert!(brief.rejected_options.is_empty());
     let labels: Vec<(&str, Option<&str>)> = brief
-        .rejected_options
+        .open_options
         .iter()
         .map(|option| (option.label.as_str(), option.recorded_as.as_deref()))
         .collect();

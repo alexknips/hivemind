@@ -10,6 +10,10 @@
 //! `rejected_options` therefore share that single rationale rather than carrying a distinct
 //! reason each — a capture-side schema change would be required to do better, and is out of
 //! scope for this bead.
+//!
+//! An option is `rejected` only against a recorded choice. A decision with options and no choice
+//! lists them as `open_options`, so an open question never reads as one that turned everything
+//! down.
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -113,7 +117,15 @@ pub struct DecisionBrief {
     pub asked_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chosen_option: Option<OptionLabel>,
+    /// The options someone turned down: every recorded option other than the chosen one. Empty
+    /// while no option is chosen, because nobody has turned anything down then; see
+    /// `open_options`.
     pub rejected_options: Vec<OptionLabel>,
+    /// The options on the table when no choice is recorded (`chosen_option` is absent): the
+    /// question is open, or the capture named its options and not its pick. Never overlaps
+    /// `rejected_options`, and absent from the JSON when a choice is recorded.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub open_options: Vec<OptionLabel>,
     pub decided_by: DecidedBy,
     /// What the decision rests on, each item with its state and whether it was named at capture
     /// or attributed later.
@@ -190,12 +202,20 @@ pub(crate) fn get_decision_brief_with_labels(
         Some(option_id) => Some(resolve_option_label(graph, option_id)?),
         None => None,
     };
-    let mut rejected_options = Vec::with_capacity(decision.option_ids.len());
+    // An option is turned down only against a choice. With no choice recorded the options are
+    // still on the table, however the decision stands.
+    let mut rejected_options = Vec::new();
+    let mut open_options = Vec::new();
     for option_id in &decision.option_ids {
         if decision.chosen_option_id.as_deref() == Some(option_id.as_str()) {
             continue;
         }
-        rejected_options.push(resolve_option_label(graph, option_id)?);
+        let label = resolve_option_label(graph, option_id)?;
+        if chosen_option.is_some() {
+            rejected_options.push(label);
+        } else {
+            open_options.push(label);
+        }
     }
 
     let brief = DecisionBrief {
@@ -213,6 +233,7 @@ pub(crate) fn get_decision_brief_with_labels(
         asked_at,
         chosen_option,
         rejected_options,
+        open_options,
         decided_by: DecidedBy {
             proposer_id: context.proposer_id,
             decider_ids: context.accepted_by,

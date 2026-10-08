@@ -804,7 +804,8 @@ pub struct DecisionBrief {
     pub question_id: Option<String>,          // the shared Question node it answers (ANSWERS); absent when it names none
     pub other_answers: Vec<QuestionAnswer>,   // other decisions answering the same question, in event order, each with status + chosen option
     pub chosen_option: Option<OptionLabel>,
-    pub rejected_options: Vec<OptionLabel>,   // label-resolved, rationale shared not per-option
+    pub rejected_options: Vec<OptionLabel>,   // label-resolved, rationale shared not per-option; empty while no option is chosen
+    pub open_options: Vec<OptionLabel>,       // the options when no choice is recorded: still on the table, never listed as rejected; omitted from JSON when empty
     pub decided_by: DecidedBy,                // proposer_id, decider_ids, source, source_ref, delegated_by, review shape
     pub rests_on: Vec<GroundingItem>,         // what it rests on: prior decision / evidence / assumption / bet, each with state + provenance
     pub grounding_state: GroundingState,      // grounded | bet | nothing_declared ("never asked")
@@ -865,7 +866,7 @@ is the default (matches `QueryArgs`'s existing convention,
 generic dispatcher `format_query_response` (`render.rs:171`), following the
 established pattern of a per-verb `render_*_summary(&T) -> String` closure
 (e.g. `render_neighborhood_summary`, `render.rs:342`) — but as short
-labeled paragraphs (decision / rationale / rejected options / recorded by
+labeled paragraphs (decision / rationale / rejected options, or open options when no choice is recorded / recorded by
 and decided by, shown as one line on self-acceptance or two when the
 recorder and decider differ / still holds), not the tab-cell table style
 used by list-shaped commands

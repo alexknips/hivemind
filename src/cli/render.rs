@@ -23,7 +23,7 @@ use crate::queries::{
     DecisionSearchResults, DecisionStatus, DecisionTimeline, DecisionView,
     DecisionsAddedSinceResults, DecisionsChangedSinceResults, GroundingAdded, GroundingItem,
     GroundingItemState, GroundingKind, GroundingState, HistoryChangeKind, HypothesisStatus,
-    MatchReason, MisfiledDecisionCandidate, NeighborhoodView, OutcomeReason,
+    MatchReason, MisfiledDecisionCandidate, NeighborhoodView, OptionLabel, OutcomeReason,
     ProjectDecisionsOutcome, ProjectDecisionsPage, ProjectListResults, ProjectMove, ProjectOutcome,
     ProjectTopicFact, QueryResponse, QuestionAnswer, ReadOnlyExport,
     ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
@@ -791,6 +791,22 @@ pub(crate) fn render_decision_brief_summary(brief: &Option<DecisionBrief>) -> St
     output.trim_end().to_owned()
 }
 
+/// Options as a person reads them, comma-separated, each followed by the record's own text when
+/// that reads differently.
+fn option_labels(options: &[OptionLabel]) -> String {
+    let mut labels = String::new();
+    for (index, option) in options.iter().enumerate() {
+        if index > 0 {
+            labels.push_str(", ");
+        }
+        labels.push_str(&option.label);
+        if let Some(recorded) = &option.recorded_as {
+            let _ = write!(labels, " (recorded as: {recorded})");
+        }
+    }
+    labels
+}
+
 fn write_decision_brief(output: &mut String, brief: &DecisionBrief) {
     let _ = writeln!(
         output,
@@ -823,19 +839,18 @@ fn write_decision_brief(output: &mut String, brief: &DecisionBrief) {
         output.push('\n');
     }
     if !brief.rejected_options.is_empty() {
-        let mut rejected = String::new();
-        for (index, option) in brief.rejected_options.iter().enumerate() {
-            if index > 0 {
-                rejected.push_str(", ");
-            }
-            rejected.push_str(&option.label);
-            if let Some(recorded) = &option.recorded_as {
-                let _ = write!(rejected, " (recorded as: {recorded})");
-            }
-        }
         let _ = writeln!(
             output,
-            "  rejected: {rejected} (shares the rationale above — no distinct per-option reason is recorded)"
+            "  rejected: {} (shares the rationale above — no distinct per-option reason is recorded)",
+            option_labels(&brief.rejected_options)
+        );
+    }
+    // Nobody turned these down: no choice is recorded, so the question is still open.
+    if !brief.open_options.is_empty() {
+        let _ = writeln!(
+            output,
+            "  options: {} (open — no choice is recorded)",
+            option_labels(&brief.open_options)
         );
     }
     write_decided_by(output, &brief.decided_by);

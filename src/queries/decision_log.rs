@@ -267,7 +267,9 @@ struct DecisionEntry {
     source: String,
     source_ref: Option<String>,
     chosen_option: Option<OptionLabel>,
-    rejected_options: Vec<OptionLabel>,
+    /// Every recorded option other than the chosen one: the rejected ones when a choice is
+    /// recorded, the open ones when it is not. The export lists them alike.
+    other_options: Vec<OptionLabel>,
     hypotheses: Vec<HypothesisEntry>,
     evidence: Vec<EvidenceEntry>,
     /// What the decision rests on, each with its state and provenance.
@@ -419,7 +421,11 @@ fn build_entry(
         source: brief.decided_by.source,
         source_ref: brief.decided_by.source_ref,
         chosen_option: brief.chosen_option,
-        rejected_options: brief.rejected_options,
+        other_options: brief
+            .rejected_options
+            .into_iter()
+            .chain(brief.open_options)
+            .collect(),
         hypotheses,
         evidence,
         rests_on: brief.rests_on,
@@ -893,7 +899,7 @@ fn render_context_section(entry: &DecisionEntry) -> String {
 }
 
 fn render_options_section(entry: &DecisionEntry) -> String {
-    if entry.chosen_option.is_none() && entry.rejected_options.is_empty() {
+    if entry.chosen_option.is_none() && entry.other_options.is_empty() {
         return "None recorded.".to_owned();
     }
     let mut out = String::new();
@@ -906,7 +912,7 @@ fn render_options_section(entry: &DecisionEntry) -> String {
         out.push(')');
         first = false;
     }
-    for option in &entry.rejected_options {
+    for option in &entry.other_options {
         if !first {
             out.push('\n');
         }

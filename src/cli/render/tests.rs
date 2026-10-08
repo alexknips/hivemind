@@ -871,3 +871,34 @@ fn brief_shows_the_recorded_option_text_beside_the_words_it_reads_as() -> Result
     );
     Ok(())
 }
+
+#[test]
+fn brief_lists_the_options_of_a_decision_nobody_has_decided_as_open_not_rejected() -> Result<()> {
+    // hivemind-d6ar: nobody turned these options down, so the summary must not say they were.
+    let scenario = Scenario::new();
+    scenario.proposal(
+        "human:alice",
+        "2026-01-01T00:00:00Z",
+        serde_json::json!({
+            "decision_id": "d:cadence",
+            "title": "Checker report cadence",
+            "rationale": "Daily or weekly; nobody has decided yet",
+            "topic_keys": ["reports"],
+            "option_ids": ["opt:1", "opt:2"],
+            "option_labels": ["Daily", "Weekly"],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    )?;
+
+    let text = brief_text(&scenario.graph()?, "d:cadence")?;
+
+    assert!(
+        text.contains("  options: Daily, Weekly (open — no choice is recorded)\n"),
+        "{text}"
+    );
+    assert!(!text.contains("rejected"), "{text}");
+    assert!(!text.contains("  chose:"), "{text}");
+    Ok(())
+}

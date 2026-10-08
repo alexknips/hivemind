@@ -2229,6 +2229,79 @@ fn query_why_shows_the_recorded_option_text_beside_the_words_it_reads_as() -> Cl
 }
 
 #[test]
+fn query_why_and_verify_list_the_options_of_an_undecided_decision_as_open() -> CliTestResult {
+    // hivemind-d6ar: options with no choice are an open question; nobody turned them down.
+    let hivemind_dir = unique_test_dir("query-why-open-options");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:alice",
+        "--hivemind-dir",
+        dir,
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Checker open question on report cadence",
+        "--rationale",
+        "How often should the checker report? Daily or weekly; nobody has decided yet",
+        "--topic-keys",
+        "reports",
+        "--options",
+        "Daily,Weekly",
+    ]))?;
+
+    let summary = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "why",
+        "checker open question on report cadence",
+        "--summary",
+    ]))?;
+    ensure(
+        summary.contains("options: ") && summary.contains("(open — no choice is recorded)"),
+        &format!("why --summary should list the options as open, got:\n{summary}"),
+    )?;
+    ensure(
+        !summary.contains("rejected"),
+        &format!("why --summary should not call an option rejected, got:\n{summary}"),
+    )?;
+
+    let verify = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "verify",
+        "checker open question on report cadence",
+    ]))?;
+    let verify: serde_json::Value = serde_json::from_str(&verify)?;
+    ensure_json_eq(
+        &verify["data"]["rejected_options"],
+        serde_json::json!([]),
+        "no option was turned down",
+    )?;
+    let mut open: Vec<&str> = verify["data"]["open_options"]
+        .as_array()
+        .ok_or("open_options is an array")?
+        .iter()
+        .filter_map(|option| option["label"].as_str())
+        .collect();
+    open.sort_unstable();
+    ensure_eq(open, vec!["Daily", "Weekly"], "both options are open")?;
+    ensure(
+        verify["data"].get("chosen_option").is_none(),
+        &format!("no choice is recorded, got: {verify}"),
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
 fn query_why_answers_a_natural_question_with_the_why() -> CliTestResult {
     let hivemind_dir = unique_test_dir("query-why-natural-question");
     let dir = hivemind_dir.to_str().expect("utf-8 temp path");

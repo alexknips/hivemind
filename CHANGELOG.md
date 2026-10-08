@@ -436,6 +436,17 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A decision nobody has decided yet no longer lists every option as rejected.** A decision
+  captured with its options and no choice (an open question, or an MCP capture whose chosen
+  option did not arrive) read as one that rejected everything: `why --summary` printed
+  `rejected: Weekly, Daily`, and `verify`, `GET /v1/decisions/verify`, `get_decision_outcome`
+  and `why` put every option in `rejected_options` beside `chosen_option: null`. An option is
+  rejected only against a recorded choice. With none, the options come back in a new
+  `open_options` list, `rejected_options` is empty, and `why --summary` prints
+  `options: Daily, Weekly (open — no choice is recorded)`. `open_options` is left out of the
+  JSON when a choice is recorded, so a decision with a choice reads exactly as before.
+  (hivemind-d6ar)
+
 - **`disagree`, `retitle`, `move`, `supersede` and `ground` no longer write to one of two
   decisions that a description matches in full.** Their help says a description that matches
   more than one decision lists the candidates and writes nothing, but since the ordering by
