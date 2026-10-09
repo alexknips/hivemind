@@ -96,6 +96,16 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   causation link to nothing, and a `notification.sent` or `blocker.resolved` event whose
   payload names event ids are refused before anything is sent. (hivemind-jawy)
 
+- **`GET /v1/decisions/why` and `/v1/decisions/verify` answer a description that matches
+  nothing with HTTP 200 and `data.outcome: "not_found"`, not 404.** A miss is an answer, and
+  the CLI, the plugin's `why.sh` / `verify.sh` and MCP already gave it as one; HTTP was the one
+  surface that answered with a 404 and a `not_found` error body. The reply is now the same
+  envelope the other three print (`{result_count, truncated, latency_ms, data: {outcome:
+  "not_found"}}`), and `tests/read_surface_parity.rs` asks the same no-match question of `why`
+  and `verify` through all four. A 404 stays for what does not exist: an `id` that names no
+  decision, and an unknown route. A client that branched on the 404 for a description now reads
+  `data.outcome`. (hivemind-996m)
+
 ### Added
 
 - **`hivemind migrate --to-url` moves a SQLite ledger into a cell over HTTP, keeping each

@@ -183,7 +183,8 @@ enum Expect {
 }
 
 /// (verb, question, expected). The first six are the questions hivemind-tfde was filed on, the
-/// next three the ones hivemind-3lko was, and the last one asks about something never decided.
+/// next three the ones hivemind-3lko was, and the last two ask about something never decided: a
+/// miss is an answer on every surface (hivemind-996m).
 const CASES: &[(&str, &str, Expect)] = &[
     // hivemind-tfde: no decision is about Postgres or a per-seat charge, and the ones that share
     // some of the words must not be named as the answer.
@@ -234,6 +235,7 @@ const CASES: &[(&str, &str, Expect)] = &[
         Expect::Answers("name"),
     ),
     ("why", "what is the weather on mars", Expect::NoMatch),
+    ("verify", "what is the weather on mars", Expect::NoMatch),
 ];
 
 /// What a reply comes to, whichever surface it came through.
@@ -523,22 +525,13 @@ async fn why_and_verify_answer_the_same_through_the_cli_the_plugin_http_and_mcp(
         );
         assert_eq!(from_mcp, cli, "{verb} {question:?}: the MCP reply differs");
 
-        match resolution {
-            // The one difference between the surfaces by design: HTTP says "nothing matches" with
-            // a 404 and an error body, where the CLI and MCP print a successful `not_found`.
-            Resolution::NoMatch => {
-                assert_eq!(status, StatusCode::NOT_FOUND, "{verb} {question:?}: {http}");
-                assert_eq!(http["error"]["code"], "not_found", "{http}");
-            }
-            _ => {
-                assert_eq!(status, StatusCode::OK, "{verb} {question:?}: {http}");
-                assert_eq!(
-                    without_latency(http),
-                    cli,
-                    "{verb} {question:?}: the HTTP reply differs"
-                );
-            }
-        }
+        // A miss is an answer, so HTTP gives the CLI's `not_found` outcome as a 200 like the rest.
+        assert_eq!(status, StatusCode::OK, "{verb} {question:?}: {http}");
+        assert_eq!(
+            without_latency(http),
+            cli,
+            "{verb} {question:?}: the HTTP reply differs"
+        );
     }
 
     let _ = std::fs::remove_dir_all(&dir);

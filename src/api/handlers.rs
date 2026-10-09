@@ -224,6 +224,8 @@ pub(super) struct FluentLookupParams {
 /// Outcome of resolving a fluent lookup route's target over HTTP. Unlike the CLI,
 /// there is no `--pick`/`#N` continuation here: the API is stateless, so an ambiguous
 /// result is returned to the caller, who re-calls with `id=` from the candidate list.
+/// A description that matches nothing is an answer too (`outcome: not_found`, a 200 like the
+/// CLI and MCP give): only an `id` that names no decision is a 404.
 ///
 /// Both lookup routes (`why`, `verify`) only read, so they resolve for reading: a description
 /// that no decision matches in full can still be answered by the closest one: it lacks the fewest
@@ -234,7 +236,8 @@ enum FluentTarget {
         id: String,
         close_match: Option<ResolvedCandidate>,
     },
-    Ambiguous(QueryResponse<ResolveOutcome>),
+    /// The resolver's own reply, `ambiguous` or `not_found`, sent back as it is.
+    Unresolved(QueryResponse<ResolveOutcome>),
 }
 
 impl FluentTarget {
@@ -285,10 +288,9 @@ fn resolve_fluent_target_http(
                     id: candidate.decision_id.clone(),
                     close_match: Some(candidate.clone()),
                 }),
-                ResolveOutcome::Ambiguous { .. } => Ok(FluentTarget::Ambiguous(response)),
-                ResolveOutcome::NotFound => Err(ApiError::not_found(
-                    "no decision matches the given description",
-                )),
+                ResolveOutcome::Ambiguous { .. } | ResolveOutcome::NotFound => {
+                    Ok(FluentTarget::Unresolved(response))
+                }
             }
         }
         (Some(_), Some(_)) => Err(ApiError::validation(
@@ -1355,7 +1357,7 @@ pub(super) async fn why_handler(
         let graph = &*graph;
 
         match resolve_fluent_target_http(graph, &params)? {
-            FluentTarget::Ambiguous(response) => Ok(envelope_value(&response)),
+            FluentTarget::Unresolved(response) => Ok(envelope_value(&response)),
             FluentTarget::Id {
                 id: decision_id,
                 close_match,
@@ -1400,7 +1402,7 @@ pub(super) async fn verify_handler(
         let graph = &*graph;
 
         match resolve_fluent_target_http(graph, &params)? {
-            FluentTarget::Ambiguous(response) => Ok(envelope_value(&response)),
+            FluentTarget::Unresolved(response) => Ok(envelope_value(&response)),
             FluentTarget::Id {
                 id: decision_id,
                 close_match,

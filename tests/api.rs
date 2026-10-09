@@ -1035,6 +1035,19 @@ async fn why_returns_404_for_missing_id() {
 }
 
 #[tokio::test]
+async fn why_answers_a_description_that_matches_nothing_with_200_and_not_found() {
+    let dir = test_ledger_dir();
+    let (status, body) = call(
+        app(dir),
+        get_req("/v1/decisions/why?description=nothing+was+ever+decided+about+this"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["data"]["outcome"], "not_found", "{body}"); // ubs:ignore
+    assert!(body.get("error").is_none(), "{body}"); // ubs:ignore
+}
+
+#[tokio::test]
 async fn why_returns_ambiguous_outcome_for_ambiguous_description() {
     let dir = test_ledger_dir();
 
@@ -1139,6 +1152,19 @@ async fn verify_returns_404_for_missing_id() {
     let (status, body) = call(app(dir), get_req("/v1/decisions/verify?id=nonexistent-id")).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}"); // ubs:ignore
     assert_eq!(body["error"]["code"], "not_found"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn verify_answers_a_description_that_matches_nothing_with_200_and_not_found() {
+    let dir = test_ledger_dir();
+    let (status, body) = call(
+        app(dir),
+        get_req("/v1/decisions/verify?description=nothing+was+ever+decided+about+this"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["data"]["outcome"], "not_found", "{body}"); // ubs:ignore
+    assert!(body.get("error").is_none(), "{body}"); // ubs:ignore
 }
 
 #[tokio::test]

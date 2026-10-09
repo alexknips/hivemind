@@ -727,9 +727,9 @@ these is a JSON-RPC error or `isError: true` — an agent branches on
 `data.outcome`, the same way it would branch on any other field, rather than
 needing a separate error-handling path for "nothing matched." This is one
 contract shared verbatim by CLI (`--json`), MCP, and the four fluent HTTP
-routes (`docs/DEPLOYMENT.md`, `docs/SELF_HOSTING.md`), with one exception: the
-HTTP routes answer a description that matches nothing with a 404 and the usual
-`not_found` error body. Outside it are the two still-id-only MCP tools above, and
+routes (`docs/DEPLOYMENT.md`, `docs/SELF_HOSTING.md`): a description that matches
+nothing is HTTP 200 with `data.outcome: "not_found"`, and a 404 is only for an `id` that
+names no decision. Outside it are the two still-id-only MCP tools above, and
 the HTTP write routes (`disagree`/`supersede`), which remain `decision_id`-path-only
 and are not fluent over HTTP at all today. `tests/read_surface_parity.rs` asks `why` and
 `verify` the same questions through the CLI, the plugin's `why.sh`/`verify.sh`, HTTP and
