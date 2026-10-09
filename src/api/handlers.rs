@@ -493,7 +493,12 @@ fn capture_decision_blocking(
         "premise_stale": proposal.premise_stale,
     });
     if !proposal.cited_not_linked.is_empty() {
-        reply["cited_not_linked"] = serde_json::json!(proposal.cited_not_linked);
+        if let Some(reply) = reply.as_object_mut() {
+            reply.insert(
+                "cited_not_linked".to_owned(),
+                serde_json::json!(proposal.cited_not_linked),
+            );
+        }
     }
     if let Some(question) = proposal.question {
         reply["question_id"] = serde_json::json!(question.question_id);

@@ -608,7 +608,12 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
         "premise_stale": proposal.premise_stale,
     });
     if !proposal.cited_not_linked.is_empty() {
-        reply["cited_not_linked"] = json!(proposal.cited_not_linked);
+        if let Some(reply) = reply.as_object_mut() {
+            reply.insert(
+                "cited_not_linked".to_owned(),
+                json!(proposal.cited_not_linked),
+            );
+        }
     }
     if let Some(question) = proposal.question {
         reply["question_id"] = json!(question.question_id);

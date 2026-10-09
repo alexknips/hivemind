@@ -124,18 +124,20 @@ const UUID_TAIL_GROUPS: [usize; 4] = [4, 4, 4, 12];
 pub(super) fn cited_decision_ids(text: &str) -> Vec<String> {
     const PREFIX: &str = "decision-";
     let is_hex = |byte: &u8| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte);
-    let mut cited: Vec<String> = Vec::new();
+    let mut cited: Vec<&str> = Vec::new();
     for (start, _) in text.match_indices(PREFIX) {
         // `pre-decision-...` or `xdecision-...` is part of a longer word.
-        if text[..start]
-            .chars()
-            .next_back()
-            .is_some_and(|before| before.is_alphanumeric() || before == '-' || before == '_')
-        {
+        let before = text.get(..start).and_then(|head| head.chars().next_back());
+        if before.is_some_and(|before| before.is_alphanumeric() || before == '-' || before == '_') {
             continue;
         }
-        let tail = &text.as_bytes()[start + PREFIX.len()..];
-        if tail.len() < SHORT_ID_HEX_DIGITS || !tail[..SHORT_ID_HEX_DIGITS].iter().all(is_hex) {
+        let Some(tail) = text.get(start + PREFIX.len()..).map(str::as_bytes) else {
+            continue;
+        };
+        if !tail
+            .get(..SHORT_ID_HEX_DIGITS)
+            .is_some_and(|digits| digits.iter().all(is_hex))
+        {
             continue;
         }
         let mut end = SHORT_ID_HEX_DIGITS;
@@ -143,10 +145,11 @@ pub(super) fn cited_decision_ids(text: &str) -> Vec<String> {
         let mut full = true;
         for group in UUID_TAIL_GROUPS {
             let group_end = cursor + 1 + group;
-            if tail.get(cursor) == Some(&b'-')
-                && tail.len() >= group_end
-                && tail[cursor + 1..group_end].iter().all(is_hex)
-            {
+            let dashed_group = tail.get(cursor) == Some(&b'-')
+                && tail
+                    .get(cursor + 1..group_end)
+                    .is_some_and(|digits| digits.iter().all(is_hex));
+            if dashed_group {
                 cursor = group_end;
             } else {
                 full = false;
@@ -159,15 +162,15 @@ pub(super) fn cited_decision_ids(text: &str) -> Vec<String> {
         if tail.get(end).is_some_and(u8::is_ascii_alphanumeric) {
             continue;
         }
-        let id = format!(
-            "{PREFIX}{}",
-            &text[start + PREFIX.len()..start + PREFIX.len() + end]
-        );
+        // The id is the text itself from `decision-` on: borrow it, copy once after the loop.
+        let Some(id) = text.get(start..start + PREFIX.len() + end) else {
+            continue;
+        };
         if !cited.contains(&id) {
             cited.push(id);
         }
     }
-    cited
+    cited.into_iter().map(str::to_owned).collect()
 }
 
 /// How new grounding nodes get their ids.
@@ -533,10 +536,11 @@ impl<L: EventLedger> Commands<'_, L> {
         for mut found in matches {
             found.sort();
             found.dedup();
-            if let [decision_id] = found.as_slice() {
-                if !premise_decision_ids.contains(decision_id) && !not_linked.contains(decision_id)
+            if let Ok([decision_id]) = <[DecisionId; 1]>::try_from(found) {
+                if !premise_decision_ids.contains(&decision_id)
+                    && !not_linked.contains(&decision_id)
                 {
-                    not_linked.push(decision_id.clone());
+                    not_linked.push(decision_id);
                 }
             }
         }
