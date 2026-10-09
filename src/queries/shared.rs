@@ -78,7 +78,7 @@ pub(crate) fn parse_cursor(cursor: Option<&str>) -> Result<usize> {
 /// backends return every stored property regardless.
 fn node_return_columns(kind: NodeKind) -> &'static str {
     match kind {
-        NodeKind::Decision => "node.id AS id, node.title AS title, node.rationale AS rationale, node.topic_keys AS topic_keys, node.project AS project, node.quote AS quote, node.question AS question, node.expressed_confidence AS expressed_confidence, node.delegated_by AS delegated_by, node.occurred_at AS occurred_at, node.slug AS slug, node.model_assessment AS model_assessment, node.model_assessment_origin AS model_assessment_origin, node.session_ids AS session_ids, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin",
+        NodeKind::Decision => "node.id AS id, node.title AS title, node.rationale AS rationale, node.topic_keys AS topic_keys, node.project AS project, node.quote AS quote, node.question AS question, node.expressed_confidence AS expressed_confidence, node.delegated_by AS delegated_by, node.occurred_at AS occurred_at, node.slug AS slug, node.model_assessment AS model_assessment, node.model_assessment_origin AS model_assessment_origin, node.importance_stakes AS importance_stakes, node.importance_irreversibility AS importance_irreversibility, node.importance_actionability AS importance_actionability, node.session_ids AS session_ids, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin",
         NodeKind::DecisionRequest => "node.id AS id, node.decision_id AS decision_id, node.topic_keys AS topic_keys, node.reason AS reason, node.priority AS priority, node.required_owner_id AS required_owner_id, node.authority_class AS authority_class, node.requested_by AS requested_by, node.client_request_id AS client_request_id, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin",
         NodeKind::Actor => "node.id AS id, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin",
         NodeKind::Evidence => "node.id AS id, node.content AS content, node.evidence_source AS evidence_source, node.recorded_at AS recorded_at, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin",
@@ -342,6 +342,15 @@ pub(crate) fn required_string(row: &GraphRow, key: &str) -> Result<String> {
 pub(crate) fn optional_string(row: &GraphRow, key: &str) -> Option<String> {
     match row.get(key) {
         Some(GraphValue::String(value)) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+/// A number stored as a float. A backend that keeps whole numbers as integers still reads.
+pub(crate) fn optional_float(row: &GraphRow, key: &str) -> Option<f64> {
+    match row.get(key) {
+        Some(GraphValue::Float(value)) => Some(*value),
+        Some(GraphValue::Int(value)) => Some(*value as f64),
         _ => None,
     }
 }

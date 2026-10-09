@@ -337,6 +337,43 @@ impl Scenario {
         )
     }
 
+    /// `assessment` where the model also judged the three importance factors (stakes,
+    /// irreversibility, actionability), each with an explanation, as `decision.scored` carries
+    /// them.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn assessment_with_importance(
+        &self,
+        decision_id: &str,
+        model: &str,
+        prompt_version: &str,
+        dimensions: Value,
+        importance: (f64, f64, f64),
+        timestamp: &str,
+    ) -> Result<EventId> {
+        let (stakes, irreversibility, actionability) = importance;
+        self.push(
+            "agent:hivemind:scorer",
+            EventType::DecisionScored,
+            json!({
+                "schema_version": 2,
+                "decision_id": decision_id,
+                "model": model,
+                "prompt_version": prompt_version,
+                "dimensions": dimensions,
+                "importance": {
+                    "stakes": stakes,
+                    "stakes_explanation": "Reaches every later store decision",
+                    "irreversibility": irreversibility,
+                    "irreversibility_explanation": "Migrating off it means a full export",
+                    "actionability": actionability,
+                    "actionability_explanation": "The team can act on it now",
+                },
+            }),
+            None,
+            timestamp,
+        )
+    }
+
     /// `decision.requested` naming `decision_id`, which nobody has proposed: the graph gets a
     /// bare stub node for it, with none of a proposal's properties.
     pub(crate) fn request_naming(&self, decision_id: &str, timestamp: &str) -> Result<EventId> {

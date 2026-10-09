@@ -120,6 +120,27 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   rationale names as `--rests-on-decision`, and to record a person's ruling as that person's
   decision (`--decided-by`) that the agent's decision rests on, not as the agent's evidence.
   (hivemind-dy6b8)
+- **Which decisions carry the most impact, and who decided them.** A new read lists the
+  decisions most impactful first, each with who decided it (a person, an agent, an agent
+  within a person's delegation, or no one recorded): `rank_decisions_by_importance
+  {include_not_in_force?, limit?, cursor?}` on the stdio MCP server and the HTTP MCP endpoint,
+  `GET /v1/decisions/importance`, `hivemind query rank_decisions_by_importance`, and
+  `/hivemind-context:importance` in the plugin, all one core. A decision is ranked when the
+  record gives a reason it matters: other decisions follow from it, counted directly and
+  through chains (five hops; `chain_capped` says when more lie beyond), each row naming up to
+  ten of them. More resting on it ranks higher, then the newest. A decision with no such basis
+  follows, unranked, reading `not_assessed`: never a score of zero, because nothing following
+  from a decision says nothing about it. The actor that only recorded a decision is never
+  shown as its decider (`recorded_by` is its own field), and a decision nobody accepted reads
+  `none_recorded`. A model's own judgement of stakes, irreversibility and actionability, stored
+  until now and read by nothing, is shown on the row as `model_judged` and never moves the rank,
+  so the list is the same on a ledger with no model. Superseded and rejected decisions are left
+  out and counted in `left_out` unless `include_not_in_force`. Importance stays a separate axis:
+  no quality score, no composite, and the tally of who decided the ranked decisions is by kind
+  only, never per person or agent. A page holds at most 50 rows with `truncated` and
+  `data.next_cursor`; `tests/importance_surface_parity.rs` requires every surface to answer
+  alike. `docs/DECISION_SCORING.md` describes it and no longer lists Importance as deferred.
+  (hivemind-bbnw.9)
 - **`hivemind migrate --to-url` moves a SQLite ledger into a cell over HTTP, keeping each
   event's uuid, actor, source and time; nobody needs the database password.** It sends the
   events in batches to the new admin-key-gated `POST /v1/ledger/replay` (`tenant_id`,

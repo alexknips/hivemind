@@ -25,6 +25,7 @@ use crate::identity::{
     agent_actor_id, agent_present_in_env, default_agent_session, default_agent_tool,
     default_human_actor_id, raw_agent_session_from_env,
 };
+use crate::importance;
 use crate::ingest::{
     accumulate_file_summary_pub, extract_slack_decision_draft, import_documents,
     import_prose_file_candidates, import_slack_thread, parse_slack_thread_fixture,
@@ -84,10 +85,11 @@ use super::args::{
     ProjectUseArgs, QualityScanArgs, QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority,
     QueryChangedDecisionsArgs, QueryChangedSinceArgs, QueryCommand, QueryDecisionStatus,
     QueryExportKind, QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs,
-    QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind,
-    QueryScanDecisionQualityArgs, QuerySearchDecisionsArgs, QuerySituationalArgs, QuickstartArgs,
-    RestatementsArgs, RestatementsCommand, RetitleArgs, ReviewArgs, ServeArgs, SlackAppArgs,
-    SlackAppCommand, SupersedeArgs, TenantArgs, TenantCommand, TenantCreateArgs, TuiArgs,
+    QueryRankDecisionsByImportanceArgs, QueryRecentActivityArgs, QueryRecentDecisionsArgs,
+    QueryRelationKind, QueryScanDecisionQualityArgs, QuerySearchDecisionsArgs,
+    QuerySituationalArgs, QuickstartArgs, RestatementsArgs, RestatementsCommand, RetitleArgs,
+    ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand, SupersedeArgs, TenantArgs, TenantCommand,
+    TenantCreateArgs, TuiArgs,
 };
 use super::current_project::CurrentProjectStore;
 use super::project_context::{resolve_project_in_ledger, ProjectContextEnv, ResolvedProject};
@@ -103,14 +105,15 @@ use super::render::{
     render_applied_links, render_blocker_notifications_summary, render_changed_decisions_summary,
     render_changed_since_summary, render_compact_view_summary, render_contested_decisions_summary,
     render_decision_brief_summary, render_decision_list_summary, render_decision_summary,
-    render_dot, render_misfiled_scan_summary, render_neighborhood_summary, render_placement_line,
-    render_read_only_export_summary, render_recall_summary, render_recent_activity_summary,
-    render_recent_decisions_summary, render_resolve_outcome_summary, render_restatement_proposals,
-    render_scan_report_summary, render_score_report_summary, render_search_summary,
-    render_situational_summary, render_supersession_summary, render_waiting_requests_summary,
-    CaptureCommandOutput, CurrentProjectOutput, DisagreeCommandOutput, ExportReport,
-    OutputEnvelope, ProjectAnchorOutput, ProjectDeclareTopicOutput, ProjectLinkOutput,
-    ProjectRegisterOutput, ReviewActionOutput, ReviewCommandOutput, SupersedeCommandOutput,
+    render_dot, render_importance_summary, render_misfiled_scan_summary,
+    render_neighborhood_summary, render_placement_line, render_read_only_export_summary,
+    render_recall_summary, render_recent_activity_summary, render_recent_decisions_summary,
+    render_resolve_outcome_summary, render_restatement_proposals, render_scan_report_summary,
+    render_score_report_summary, render_search_summary, render_situational_summary,
+    render_supersession_summary, render_waiting_requests_summary, CaptureCommandOutput,
+    CurrentProjectOutput, DisagreeCommandOutput, ExportReport, OutputEnvelope, ProjectAnchorOutput,
+    ProjectDeclareTopicOutput, ProjectLinkOutput, ProjectRegisterOutput, ReviewActionOutput,
+    ReviewCommandOutput, SupersedeCommandOutput,
 };
 
 pub fn run(cli: &Cli) -> Result<String> {
@@ -2510,6 +2513,7 @@ fn run_query_with_ledger(ledger: &impl EventLedger, query: &QueryArgs) -> Result
         | QueryCommand::ScoreDecision(_)
         | QueryCommand::ScanDecisionQuality(_)
         | QueryCommand::GetSuggestions(_)
+        | QueryCommand::RankDecisionsByImportance(_)
         | QueryCommand::ScanMisfiledDecisions(_)
         | QueryCommand::GetSituationalDecisions(_) => {
             return Err(
@@ -3095,6 +3099,15 @@ fn scan_request(args: &QueryScanDecisionQualityArgs) -> Result<ScanRequest> {
     })
 }
 
+/// The page of the importance ranking a `rank_decisions_by_importance` command asks for.
+fn importance_request(args: &QueryRankDecisionsByImportanceArgs) -> importance::ImportanceRequest {
+    importance::ImportanceRequest {
+        include_not_in_force: args.include_not_in_force,
+        limit: args.limit,
+        cursor: args.cursor.clone(),
+    }
+}
+
 fn run_query_with_graph(
     context: &QueryContext,
     ledger: &AnyLedger,
@@ -3384,6 +3397,16 @@ fn run_query_with_graph(
                 query.summary,
                 &response,
                 render_scan_report_summary,
+                response.data.next_cursor.as_deref(),
+            )?
+        }
+        QueryCommand::RankDecisionsByImportance(args) => {
+            let request = importance_request(args);
+            let response = importance::rank_decisions_by_importance(graph, &request)?;
+            format_query_response(
+                query.summary,
+                &response,
+                render_importance_summary,
                 response.data.next_cursor.as_deref(),
             )?
         }

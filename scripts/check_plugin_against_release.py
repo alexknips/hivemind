@@ -441,7 +441,7 @@ def check_session_start_hook(world: World) -> None:
 # --------------------------------------------------------------------------------------------
 
 
-def check_context_scripts(world: World, project: Path, binary_has_ground: bool) -> None:
+def check_context_scripts(world: World, project: Path, binary_has_ground: bool, binary_has_importance: bool) -> None:
     scripts = CONTEXT / "scripts"
 
     def verb(name: str, *args: str, **extra_env: str) -> subprocess.CompletedProcess:
@@ -470,6 +470,15 @@ def check_context_scripts(world: World, project: Path, binary_has_ground: bool) 
         "--chose", "Raise to 5 attempts", "--rests-on-assumption", "The upstream stays flaky",
     )  # fmt: skip
     check("hivemind-context supersede", done.returncode == 0, tail(done))
+    done = verb("importance")
+    if binary_has_importance:
+        check("hivemind-context importance", done.returncode == 0, tail(done))
+    else:
+        check(
+            "hivemind-context importance names the verb the release lacks",
+            done.returncode == 2 and "has no `query rank_decisions_by_importance` command" in done.stderr,
+            tail(done),
+        )
     done = verb("ground", "retry budget", "--rests-on-assumption", "The upstream stays flaky")
     if binary_has_ground:
         check("hivemind-context ground", done.returncode == 0, tail(done))
@@ -499,6 +508,9 @@ def main() -> int:
         print(f"release binary: {version}")
         world = World(root / "world", binary)
         has_ground = subprocess.run([str(binary), "ground", "--help"], capture_output=True).returncode == 0
+        has_importance = (
+            subprocess.run([str(binary), "query", "rank_decisions_by_importance", "--help"], capture_output=True).returncode == 0
+        )
 
         check_mcp(world, "Claude Code", CAPTURE / ".mcp.json", "claude")
         check_mcp(world, "Codex", CAPTURE / ".codex-plugin" / "mcp.json", "codex")
@@ -508,7 +520,7 @@ def main() -> int:
         check_skill_direct_form(world, "Codex", "codex")
         check_ask_hooks(world)
         check_session_start_hook(world)
-        check_context_scripts(world, claude_project, has_ground)
+        check_context_scripts(world, claude_project, has_ground, has_importance)
 
     print()
     if FAILURES:

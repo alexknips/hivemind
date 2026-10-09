@@ -122,7 +122,7 @@ fn tools_list_includes_all_eighteen_tools() {
     );
     assert_eq!(responses.len(), 1); // ubs:ignore: test-only; index guaranteed by test setup
     let tools = responses[0]["result"]["tools"].as_array().expect("array"); // ubs:ignore: test-only; panicking is correct in tests
-    assert_eq!(tools.len(), 35, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
+    assert_eq!(tools.len(), 36, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
     let names: Vec<&str> = tools
         .iter()
         .map(|tool| tool["name"].as_str().expect("string name")) // ubs:ignore: test-only; panicking is correct in tests
@@ -149,6 +149,7 @@ fn tools_list_includes_all_eighteen_tools() {
         "score_decision",
         "scan_decision_quality",
         "get_suggestions",
+        "rank_decisions_by_importance",
         "scan_misfiled_decisions",
         "analyze_failure_modes",
         "get_relevant_decisions",

@@ -48,9 +48,9 @@ use core::{
     GetChangedDecisionsArgs, GetContestedDecisionsArgs, GetDecisionContextArgs,
     GetDecisionNeighborhoodArgs, GetDecisionOutcomeArgs, GetSituationalDecisionsArgs,
     GetSuggestionsArgs, GetSupersessionChainArgs, GetWaitingRequestsArgs, GroundDecisionArgs,
-    LedgerHandle, LedgerProvider, MoveDecisionArgs, RecallDecisionsArgs, RecentDecisionsArgs,
-    RequestDecisionArgs, RetitleDecisionArgs, ScanDecisionQualityArgs, ScanMisfiledDecisionsArgs,
-    ScoreDecisionArgs, SupersedeDecisionArgs,
+    LedgerHandle, LedgerProvider, MoveDecisionArgs, RankDecisionsByImportanceArgs,
+    RecallDecisionsArgs, RecentDecisionsArgs, RequestDecisionArgs, RetitleDecisionArgs,
+    ScanDecisionQualityArgs, ScanMisfiledDecisionsArgs, ScoreDecisionArgs, SupersedeDecisionArgs,
 };
 
 /// MCP protocol revision this server speaks. Aligns with the modelcontextprotocol.io
@@ -394,6 +394,7 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "score_decision" => tool_score_decision(arguments, config),
         "scan_decision_quality" => tool_scan_decision_quality(arguments, config),
         "get_suggestions" => tool_get_suggestions(arguments, config),
+        "rank_decisions_by_importance" => tool_rank_decisions_by_importance(arguments, config),
         "scan_misfiled_decisions" => tool_scan_misfiled_decisions(arguments, config),
         "analyze_failure_modes" => tool_analyze_failure_modes(arguments, config),
         "get_relevant_decisions" => tool_get_relevant_decisions(arguments, config),
@@ -1062,6 +1063,28 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "rank_decisions_by_importance",
+            "description": "Which decisions carry the most impact, most first, each with who decided it. A decision is ranked when the record gives a reason it matters: other decisions follow from it (rests_on_it: direct, and through_chains, followed up to five hops; chain_capped says when more lie beyond). More resting on it ranks higher; ties go to the newest. A decision with no such basis follows, unranked, with importance not_assessed: never a score of zero, because nothing following from a decision says nothing about it. Each row names who decided it: decided_by.kind is person, agent, agent_within_delegation (delegated_by names the person), mixed, unknown or none_recorded, read from the actors who accepted it. A decision nobody accepted reads none_recorded and is never credited to the actor who recorded it (recorded_by, shown on its own). reasons states the basis in words. A model's own judgement of stakes, irreversibility and actionability, when one exists, is shown as model_judged and never moves the rank. Importance is a separate axis: no quality score, no composite. Superseded and rejected decisions are left out unless include_not_in_force is true, and left_out counts them. ranked_decided_by tallies the ranked decisions by decider kind (never per person or agent). When truncated is true, pass data.next_cursor as cursor to continue. No LLM involved; works self-hosted.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "include_not_in_force": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Also list superseded and rejected decisions (default false: they are left out and counted in left_out)."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum decisions to return (1–50, default 10)."
+                    },
+                    "cursor": {
+                        "type": "string",
+                        "description": "Pagination cursor: the `data.next_cursor` of a previous response."
+                    }
+                }
+            }
+        }),
+        json!({
             "name": "scan_misfiled_decisions",
             "description": "Flag decisions carrying a caller-named \"foreign\" topic key — a decision tagged with another ledger's name most likely belongs there instead (hivemind-zdsh.14). Deterministic exact-match only, no LLM, no inference beyond topic-key membership: HiveMind does not decide what is foreign, so the caller supplies the foreign keys. Each candidate names the project it is filed under; `project` scopes the report to one project and `move_to` names where the flagged decisions belong. Read-only report — never moves a decision: move each confirmed one with `move_decision`, recorded and reversible.",
             "inputSchema": {
@@ -1611,6 +1634,17 @@ fn tool_get_suggestions(args: Value, config: &McpConfig) -> std::result::Result<
     let core_args = GetSuggestionsArgs::from_json(&args)?;
     let graph = open_memory_graph(config)?;
     let output = core::get_suggestions(&graph, core_args)?;
+    Ok(output.into_value())
+}
+
+fn tool_rank_decisions_by_importance(
+    args: Value,
+    config: &McpConfig,
+) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let core_args = RankDecisionsByImportanceArgs::from_json(&args)?;
+    let graph = open_memory_graph(config)?;
+    let output = core::rank_decisions_by_importance(&graph, core_args)?;
     Ok(output.into_value())
 }
 

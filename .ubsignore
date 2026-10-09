@@ -74,3 +74,5 @@ src/possibly_related/tests.rs
 work-orf0.5/
 src/queries/suggestion_acks/tests.rs
 src/replay/tests.rs
+src/importance/tests.rs
+src/queries/importance_facts/tests.rs

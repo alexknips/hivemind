@@ -9,8 +9,11 @@
 > a tier or a grade. A model's assessment of a decision has a record, a write path, a
 > place beside the floors ([below](#a-models-assessment-beside-the-floors)), and two
 > optional producers ([below](#producers-of-a-model-assessment)): the background scorer
-> (`ANTHROPIC_API_KEY`) and the keyless `emit decision.scored` path. **Deferred, not
-> built:** Composite, Confidence, Reputation, Importance (see [Deferred](#deferred-not-built)).
+> (`ANTHROPIC_API_KEY`) and the keyless `emit decision.scored` path. A separate read,
+> `rank_decisions_by_importance`, lists the decisions that carry the most impact with who
+> decided each ([Importance](#importance-which-decisions-carry-the-most-impact)); it is its
+> own axis and no part of the profile. **Deferred, not built:** Composite, Confidence,
+> Reputation (see [Deferred](#deferred-not-built)).
 
 HiveMind records *what* was decided, by whom, with what options and evidence
 ([`ARCHITECTURE.md`](ARCHITECTURE.md)). The quality profile adds a separate, derived
@@ -67,7 +70,7 @@ Each dimension stands alone. There is no composite over them.
 Bias and Calibration are separate by design: Bias covers distortions *other than*
 confidence/evidence mismatch; Calibration covers that mismatch. Reversibility is not a
 quality dimension: a reversible decision is not lower *quality*, it simply matters less
-(see [Importance](#deferred-not-built)).
+(see [Importance](#importance-which-decisions-carry-the-most-impact)).
 
 ## Floors: what each dimension can say without a model
 
@@ -201,7 +204,8 @@ is the same with or without one.
   level). A dimension cannot be left out, and none can carry a placeholder number: a
   model that cannot assess a dimension says so, with why. `importance` (stakes,
   irreversibility, actionability, each with its explanation) is a separate axis, optional,
-  and not part of the profile. `supersedes_score_id` optionally names the earlier
+  and not part of the profile. The importance ranking shows the three numbers beside a
+  decision as `model_judged` and never ranks by them. `supersedes_score_id` optionally names the earlier
   `decision.scored` event a re-assessment replaces.
 - **A `partial` or `solid` answer must quote; a `none` answer may leave the quote out.**
   A `none` judgement is usually about something the record lacks, and an absence cannot
@@ -653,6 +657,124 @@ it a function that returns each exported decision's section, and an export given
 the section and changes nothing else. **Cost:** one profile read per exported decision (a
 handful of anchored lookups each), on top of the reads the export already makes for it.
 
+## Importance: which decisions carry the most impact
+
+`rank_decisions_by_importance` lists decisions, most impactful first, each with who decided
+it: the answer to "are we keeping the high-stakes calls, or leaving them to our agents?"
+from what the ledger states. It is a **separate axis**. It reads none of the seven
+dimensions, folds into none of them and returns no composite, number or grade. It is
+Layer 3 like the profile (`src/importance.rs`, over the bulk read
+`queries::get_importance_facts`), reads with no model and no network, and writes nothing;
+the same test that holds the profile out of `src/queries/` and `src/commands/` holds this
+out too.
+
+| | MCP (stdio and HTTP) | HTTP REST | CLI (JSON by default, `--summary` for text) | Plugin |
+| --- | --- | --- | --- | --- |
+| A page of the ranking | `rank_decisions_by_importance {include_not_in_force?, limit?, cursor?}` | `GET /v1/decisions/importance[?limit=][?cursor=][?include_not_in_force=]` | `hivemind query rank_decisions_by_importance [--limit N] [--cursor C] [--include-not-in-force]` | `/hivemind-context:importance` |
+
+All of them run one core, and `tests/importance_surface_parity.rs` puts the same ledger
+through every one and requires the same answer.
+
+### What a decision's importance is read from
+
+A decision **has a basis** when the record gives a reason it matters. What the record states
+today:
+
+- **Reach.** Other decisions follow from it (`FOLLOWS_FROM`): `rests_on_it.direct` counts
+  the decisions that follow from it directly (the same count as `dependents_count` in the
+  decision brief, except that a decision that follows from itself does not rest on itself)
+  and `rests_on_it.through_chains` the decisions that follow from it directly or through a
+  chain of such decisions, followed for five hops. When decisions lie beyond the fifth hop
+  `chain_capped` is true and the count is a lower bound. A cycle counts each decision once.
+  `direct_ids` names up to ten of the direct followers, so the count can be opened and
+  checked.
+- **Actionability** is the decision's standing. A superseded or rejected decision is not in
+  force and leaves the default list; `left_out` counts what was left out and
+  `include_not_in_force` brings it back, so nothing disappears silently.
+- **Irreversibility** has no recorded source: the decision record does not state what undoing
+  a decision would cost, so it is not read from the text and not guessed.
+- **A model's judgement** of stakes, irreversibility and actionability (the `importance`
+  object of a model's assessment, above) is shown on the row as `model_judged`, with the
+  model, the prompt version and the ledger offset of the assessment, where its explanations
+  are. It **never moves the rank**: the list is the same on a ledger with no model and no
+  API key, and every position is explained by something a reader can open.
+
+A decision with no basis reads **`not_assessed`**. That is not a score of zero: nothing
+following from a decision says nothing about the decision (a new one has had no time to be
+built on), so it is listed without a rank, never as the least important.
+
+### The order
+
+There are no weights, no product and no constant. Decisions with a basis come first: the one
+with the most decisions resting on it through chains leads, then the one with the most
+resting on it directly, then the newest by ledger offset, then by id, so a tie is never
+random. Decisions with no basis follow, newest first. `rank` is the position among the ranked
+decisions (1 is the most impactful) and is absent when not assessed.
+
+### Who decided
+
+Each row has `decided_by`: the `deciders` (the actors who accepted it, from `ACCEPTED_BY`,
+each with `kind` `human`, `agent` or `unknown` from the actor-id prefix) and a `kind` for the
+decision as a whole:
+
+| `kind` | When |
+| --- | --- |
+| `person` | every decider is a person |
+| `agent` | every decider is an agent and no delegation is recorded |
+| `agent_within_delegation` | every decider is an agent and `delegated_by` names the person whose delegation it fell within |
+| `mixed` | people and agents both accepted it |
+| `unknown` | the deciders carry neither prefix |
+| `none_recorded` | nobody accepted it |
+
+The actor who **recorded** a decision (`recorded_by`) is shown on its own and is never read
+as its decider: a decision nobody accepted reads `none_recorded` however it was recorded.
+`rejected_by` lists who rejected it when anyone did, so a contested decision shows both sides.
+`ranked_decided_by` tallies the ranked decisions by `kind` only; the ranking never names a
+person or an agent as a score, and never ranks them.
+
+```json
+{
+  "ranked_total": 2,
+  "not_assessed_total": 1,
+  "left_out": { "superseded": 0, "rejected": 1 },
+  "ranked_decided_by": { "person": 1, "agent": 0, "agent_within_delegation": 1, "mixed": 0, "unknown": 0, "none_recorded": 0 },
+  "decisions": [
+    {
+      "rank": 1,
+      "decision_id": "decision-…",
+      "title": "The ledger is the only source of truth for what was decided",
+      "project": "personal:human:alex", "project_label": "alex's personal project",
+      "status": "accepted",
+      "importance": "ranked",
+      "rests_on_it": { "direct": 1, "through_chains": 3, "chain_capped": false, "direct_ids": ["decision-…"] },
+      "decided_by": { "kind": "person", "deciders": [{ "id": "human:alex", "kind": "human" }] },
+      "recorded_by": "agent:claude:crew",
+      "reasons": ["3 decisions follow from it: 1 directly, the rest through chains of decisions that follow from it"]
+    },
+    {
+      "decision_id": "decision-…",
+      "title": "Status derivation is a pure function of the events",
+      "status": "proposed",
+      "importance": "not_assessed",
+      "rests_on_it": { "direct": 0, "through_chains": 0, "chain_capped": false, "direct_ids": [] },
+      "decided_by": { "kind": "none_recorded", "deciders": [] },
+      "recorded_by": "agent:claude:crew",
+      "reasons": ["not assessed: no decision recorded follows from it, and the record states nothing else about its importance"]
+    }
+  ]
+}
+```
+
+### Bounded
+
+A page holds at most 50 rows (default 10; a larger `limit` is cut to 50). `truncated` says
+whether more follow and `data.next_cursor` resumes after the last row of the page. The cursor
+is a position in the order, not an offset: a decision recorded between two calls that sorts
+after it is not skipped and none is repeated. `ranked_total` and `not_assessed_total` count
+every page together, so a short page never reads as the whole list. **Cost:** seven bulk reads
+of the graph whatever its size, and one walk of at most five hops from each decision that has
+a direct follower.
+
 ## Where the retired deductions went
 
 Earlier versions graded a decision with five deductions and a tier. They were outcome,
@@ -681,12 +803,8 @@ leave room for, and as the reason there is no number in a response.
   well-made. Deferred with it. (Distinct from the *capture-time, author-reported*
   confidence the decider declares, which Calibration reads and which is built.)
 - **Reputation.** An actor's importance-weighted average of the quality of their
-  decisions. Deferred, and it needs both a composite and Importance.
-- **Importance (a second axis).** A magnitude, not a percentage:
-  `Importance = Stakes × Irreversibility × Actionability`, with Stakes unbounded and
-  log-scaled (`severity × reach`), Irreversibility in `[0,1]` as a discount (two-way
-  doors matter less) and Actionability in `[0,1]` as a gate. Reversibility lives here,
-  not in the quality dimensions.
+  decisions. Deferred, and it needs a composite, which is not built; it would also rank
+  actors, which neither the profile nor the importance ranking does.
 - **Validation.** Perturbation and ablation (degrade one dimension, confirm that
   dimension moves), dogfooding against expert agreement, and prospective prediction of
   reverts with zero outcome leakage.

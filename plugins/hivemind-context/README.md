@@ -22,6 +22,10 @@ The Claude package installs:
   resolved by description.
 - `/hivemind-context:verify` — "did that hold up?", resolved by
   description.
+- `/hivemind-context:importance` — "which decisions carry the most impact, and
+  who decided them?": the decisions with others resting on them, most first,
+  each with who decided it. A decision nothing is recorded about reads
+  `not_assessed`, never a score of zero.
 - `/hivemind-context:disagree` — push back on a decision by description
   (write verb, strict ambiguity gate).
 - `/hivemind-context:supersede` — replace a decision by description (write
@@ -33,7 +37,8 @@ The Claude package installs:
 
 Every command maps 1:1 to one CLI verb from `hivemind-tenv.1`/`tenv.2`'s
 fluent surface (`query situational`, `query recall`, `query why`,
-`query verify`, `disagree`, `supersede`, `ground`). None of them take a `decision_id`
+`query verify`, `disagree`, `supersede`, `ground`) except `importance`, which
+lists instead of resolving (`query rank_decisions_by_importance`). None of them take a `decision_id`
 as primary input — free text (or `#N` from a previous ambiguous result) is
 the interface; `--id`/`--decision`/`--old`/`--pick N` remain as escape
 hatches for callers that already have one.

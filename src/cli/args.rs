@@ -2035,6 +2035,12 @@ pub enum QueryCommand {
     /// `scan_decision_quality`, less what has been dealt with): what is new since you last looked.
     #[command(name = "get_suggestions")]
     GetSuggestions(QueryGetSuggestionsArgs),
+    /// Which decisions carry the most impact, most first, each with who decided it (a person or
+    /// an agent). A decision is ranked when other decisions follow from it; the rest follow
+    /// unranked and read `not_assessed`. Superseded and rejected decisions are left out unless
+    /// `--include-not-in-force`. Importance is its own axis: no quality score, no composite.
+    #[command(name = "rank_decisions_by_importance")]
+    RankDecisionsByImportance(QueryRankDecisionsByImportanceArgs),
     /// Flag decisions carrying a caller-named "foreign" topic key — a decision
     /// tagged with another ledger's name most likely belongs there instead. Each row
     /// names the project the decision is filed under; `--project` scopes the report to
@@ -2634,6 +2640,22 @@ pub struct QueryScanDecisionQualityArgs {
 
     /// Maximum findings to return (1–1000, default 25).
     #[arg(long, default_value_t = SCAN_DEFAULT_LIMIT)]
+    pub limit: usize,
+
+    /// Pagination cursor: the `next_cursor` of a previous response.
+    #[arg(long)]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QueryRankDecisionsByImportanceArgs {
+    /// Also list decisions that are superseded or rejected (they are left out and counted
+    /// otherwise).
+    #[arg(long = "include-not-in-force")]
+    pub include_not_in_force: bool,
+
+    /// Maximum decisions to return (1–50, default 10).
+    #[arg(long, default_value_t = crate::importance::DEFAULT_PAGE_SIZE)]
     pub limit: usize,
 
     /// Pagination cursor: the `next_cursor` of a previous response.

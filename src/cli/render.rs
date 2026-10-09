@@ -10,6 +10,7 @@ use crate::commands::{
 };
 use crate::error::{CliError, CommandError};
 use crate::events::{EventId, EventType, ModelDimension};
+use crate::importance::{Importance, ImportanceReport};
 use crate::ingest::{DocumentImportReport, DocumentPreparationReport};
 use crate::projector::{
     GraphParams, GraphProperties, GraphRow, GraphValue, GraphView, NodeKind,
@@ -730,6 +731,68 @@ pub(crate) fn render_scan_report_summary(report: &ScanReport) -> String {
                 dimension_summary_line(line.dimension, &line.assessment)
             );
         }
+    }
+    output.trim_end().to_owned()
+}
+
+/// The ranking as lines a person can read: the totals, who decided the ranked decisions, then one
+/// line per decision with its position, its standing, who decided it and why it sits there.
+pub(crate) fn render_importance_summary(report: &ImportanceReport) -> String {
+    if report.decisions.is_empty() {
+        return "No decisions to rank".to_owned();
+    }
+    let mut output = String::new();
+    let _ = writeln!(
+        output,
+        "importance\tranked={}\tnot_assessed={}\tleft_out_superseded={}\tleft_out_rejected={}",
+        report.ranked_total,
+        report.not_assessed_total,
+        report.left_out.superseded,
+        report.left_out.rejected
+    );
+    let tally = &report.ranked_decided_by;
+    let _ = writeln!(
+        output,
+        "ranked_decided_by\tperson={}\tagent={}\tagent_within_delegation={}\tmixed={}\tunknown={}\tnone_recorded={}",
+        tally.person,
+        tally.agent,
+        tally.agent_within_delegation,
+        tally.mixed,
+        tally.unknown,
+        tally.none_recorded
+    );
+    for row in &report.decisions {
+        match (row.importance, row.rank) {
+            (Importance::Ranked, Some(rank)) => {
+                let _ = write!(output, "#{rank}");
+            }
+            _ => output.push_str("not_assessed"),
+        }
+        let _ = write!(
+            output,
+            "\t{}\t{}\tstatus={}\tdecided_by={}",
+            row.decision_id,
+            summary_cell(&row.title),
+            decision_status_label(row.status),
+            row.decided_by.kind.as_str()
+        );
+        let mut separator = '(';
+        for decider in &row.decided_by.deciders {
+            let _ = write!(output, "{separator}{}", decider.id);
+            separator = ',';
+        }
+        if !row.decided_by.deciders.is_empty() {
+            output.push(')');
+        }
+        if let Some(delegated_by) = &row.decided_by.delegated_by {
+            let _ = write!(output, " delegated_by={delegated_by}");
+        }
+        let _ = writeln!(
+            output,
+            "\trecorded_by={}\t{}",
+            row.recorded_by.as_deref().unwrap_or("-"),
+            summary_cell(&row.reasons.join("; "))
+        );
     }
     output.trim_end().to_owned()
 }

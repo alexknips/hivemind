@@ -180,6 +180,24 @@ with `id=<decision_id>` from the candidate list.
 still take `decision_id` only as a path parameter, unlike their MCP
 equivalents (`docs/AGENT_FLUENT_QUERYING.md` §3.4).
 
+### Importance: which decisions carry the most impact
+
+| Route | Query params | Equivalent |
+|---|---|---|
+| `GET /v1/decisions/importance` | `limit` (1–50, default 10), `cursor`, `include_not_in_force` | `hivemind query rank_decisions_by_importance`, MCP `rank_decisions_by_importance` |
+
+```bash
+curl -s "http://localhost:8080/v1/decisions/importance?limit=5" \
+  -H "Authorization: Bearer $HIVEMIND_API_KEY"
+```
+
+The decisions with others resting on them, most first, each with who decided it (a person,
+an agent, an agent within a person's delegation, or no one recorded). A decision the record
+gives no reason to rank reads `importance: "not_assessed"`, never a number; `truncated` and
+`data.next_cursor` page through the list. The same envelope comes from the CLI, the plugin's
+`importance.sh`, HTTP and both MCP transports, and `tests/importance_surface_parity.rs`
+compares them. `docs/DECISION_SCORING.md` says what a rank is read from.
+
 ### Restatements: linking a decision recorded twice
 
 A decision the ledger holds twice (one per session that relayed it) is linked, not

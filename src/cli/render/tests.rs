@@ -962,3 +962,69 @@ fn brief_sets_a_label_that_holds_list_punctuation_apart_in_quotes() -> Result<()
     );
     Ok(())
 }
+
+#[test]
+fn the_importance_summary_gives_each_decision_its_place_its_decider_and_its_basis() -> Result<()> {
+    let scenario = Scenario::new();
+    scenario.decision(
+        "d:root",
+        "The ledger is the source of truth",
+        "agent:claude:crew",
+        "2026-01-01T00:00:00Z",
+    )?;
+    scenario.decision(
+        "d:leaf",
+        "Status is derived",
+        "agent:claude:crew",
+        "2026-01-02T00:00:00Z",
+    )?;
+    scenario.relation(
+        "FOLLOWS_FROM",
+        "d:leaf",
+        "d:root",
+        "agent:claude:crew",
+        None,
+        "2026-01-03T00:00:00Z",
+    )?;
+    scenario.accept("d:root", "human:alex", "2026-01-04T00:00:00Z")?;
+    let report = crate::importance::rank_decisions_by_importance(
+        &scenario.graph()?,
+        &crate::importance::ImportanceRequest::default(),
+    )?
+    .data;
+
+    let text = render_importance_summary(&report);
+
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines[0],
+        "importance\tranked=1\tnot_assessed=1\tleft_out_superseded=0\tleft_out_rejected=0"
+    );
+    assert_eq!(
+        lines[1],
+        "ranked_decided_by\tperson=1\tagent=0\tagent_within_delegation=0\tmixed=0\tunknown=0\tnone_recorded=0"
+    );
+    assert_eq!(
+        lines[2],
+        "#1\td:root\tThe ledger is the source of truth\tstatus=accepted\tdecided_by=person(human:alex)\trecorded_by=agent:claude:crew\t1 decision follows from it directly"
+    );
+    assert!(
+        lines[3].starts_with(
+            "not_assessed\td:leaf\tStatus is derived\tstatus=proposed\tdecided_by=none_recorded\trecorded_by=agent:claude:crew\tnot assessed:"
+        ),
+        "{text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_importance_summary_of_an_empty_ledger_says_there_is_nothing_to_rank() -> Result<()> {
+    let report = crate::importance::rank_decisions_by_importance(
+        &Scenario::new().graph()?,
+        &crate::importance::ImportanceRequest::default(),
+    )?
+    .data;
+
+    assert_eq!(render_importance_summary(&report), "No decisions to rank");
+    Ok(())
+}

@@ -31,9 +31,9 @@ use crate::mcp::core::{
     GetChangedDecisionsArgs, GetContestedDecisionsArgs, GetDecisionContextArgs,
     GetDecisionNeighborhoodArgs, GetDecisionOutcomeArgs, GetSituationalDecisionsArgs,
     GetSuggestionsArgs, GetSupersessionChainArgs, GetWaitingRequestsArgs, GroundDecisionArgs,
-    LedgerHandle, LedgerProvider, MoveDecisionArgs, RecallDecisionsArgs, RecentDecisionsArgs,
-    RequestDecisionArgs, RetitleDecisionArgs, ScanDecisionQualityArgs, ScanMisfiledDecisionsArgs,
-    ScoreDecisionArgs, SupersedeDecisionArgs,
+    LedgerHandle, LedgerProvider, MoveDecisionArgs, RankDecisionsByImportanceArgs,
+    RecallDecisionsArgs, RecentDecisionsArgs, RequestDecisionArgs, RetitleDecisionArgs,
+    ScanDecisionQualityArgs, ScanMisfiledDecisionsArgs, ScoreDecisionArgs, SupersedeDecisionArgs,
 };
 use crate::projector::memory::MemoryGraph;
 use crate::queries::{
@@ -248,6 +248,9 @@ fn mcp_tools_call_blocking(
         "score_decision" => mcp_score_decision(backend, ctx, args, cache),
         "scan_decision_quality" => mcp_scan_decision_quality(backend, ctx, args, cache),
         "get_suggestions" => mcp_get_suggestions(backend, ctx, args, cache),
+        "rank_decisions_by_importance" => {
+            mcp_rank_decisions_by_importance(backend, ctx, args, cache)
+        }
         "scan_misfiled_decisions" => mcp_scan_misfiled_decisions(backend, ctx, args, cache),
         "analyze_failure_modes" => mcp_analyze_failure_modes(backend, ctx, args, cache),
         "dump_graph" => mcp_dump_graph(backend, ctx, cache),
@@ -778,6 +781,18 @@ fn mcp_get_suggestions(
     let core_args = GetSuggestionsArgs::from_json(&args)?;
     let graph = mcp_open_graph(backend, ctx, cache)?;
     let output = crate::mcp::core::get_suggestions(&*graph, core_args)?;
+    Ok(output.into_value())
+}
+
+fn mcp_rank_decisions_by_importance(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    args: serde_json::Map<String, serde_json::Value>,
+    cache: &Arc<GraphCache>,
+) -> McpToolResult {
+    let core_args = RankDecisionsByImportanceArgs::from_json(&args)?;
+    let graph = mcp_open_graph(backend, ctx, cache)?;
+    let output = crate::mcp::core::rank_decisions_by_importance(&*graph, core_args)?;
     Ok(output.into_value())
 }
 

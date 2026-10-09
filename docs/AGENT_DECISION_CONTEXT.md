@@ -99,7 +99,8 @@ The plugin includes:
 - `/hivemind-context:situational`, `/hivemind-context:recall`,
   `/hivemind-context:why`, `/hivemind-context:verify`,
   `/hivemind-context:disagree`, `/hivemind-context:supersede`,
-  `/hivemind-context:ground` — one slash command per CLI verb.
+  `/hivemind-context:ground`, `/hivemind-context:importance` — one slash command
+  per CLI verb.
 - The `hivemind-context` skill, which teaches an agent when to consult
   HiveMind before changing code, how to read an ambiguous result, and
   forbids inventing a `decision_id`.

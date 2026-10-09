@@ -23,7 +23,7 @@
 //! `recall_decisions`, `supersede_decision`, `disagree_decision`, `move_decision`,
 //! `ground_decision`,
 //! `get_decision_outcome`, `hivemind_compact_view`, `score_decision`,
-//! `scan_decision_quality`, `get_suggestions`, `recent_decisions`,
+//! `scan_decision_quality`, `get_suggestions`, `rank_decisions_by_importance`, `recent_decisions`,
 //! `decision_quality_candidates`, `get_decision_context`,
 //! `decision_context_candidates`, `scan_misfiled_decisions`,
 //! `analyze_failure_modes`, `request_decision`, `acknowledge_suggestion`. Later
@@ -44,6 +44,7 @@ use crate::grounding::{
     premise_cycle_refusal, resolve_grounding, GroundingResolution, GroundingSpec,
     WIRE_GROUNDING_REFUSAL,
 };
+use crate::importance::{self, ImportanceRequest, DEFAULT_PAGE_SIZE};
 use crate::ledger::{AnyLedger, EventLedger, TenantScopedLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
 use crate::quality_profile::{
@@ -224,6 +225,7 @@ pub(crate) const TOOL_KINDS: &[(&str, ToolKind)] = &[
     ("score_decision", ToolKind::ReadDecisions),
     ("scan_decision_quality", ToolKind::ReadDecisions),
     ("get_suggestions", ToolKind::ReadDecisions),
+    ("rank_decisions_by_importance", ToolKind::ReadDecisions),
     ("scan_misfiled_decisions", ToolKind::ReadDecisions),
     ("analyze_failure_modes", ToolKind::ReadDecisions),
     ("get_relevant_decisions", ToolKind::ReadDecisions),
@@ -2000,6 +2002,36 @@ pub(crate) fn get_suggestions(
 ) -> Result<ToolOutput, CoreError> {
     let response =
         quality_profile::get_suggestions(graph, &args.request).map_err(CoreError::from)?;
+    query_output(&response)
+}
+
+/// Parsed, validated arguments for the `rank_decisions_by_importance` tool.
+pub(crate) struct RankDecisionsByImportanceArgs {
+    pub(crate) request: ImportanceRequest,
+}
+
+impl RankDecisionsByImportanceArgs {
+    pub(crate) fn from_json(args: &Map<String, Value>) -> Result<Self, CoreError> {
+        Ok(Self {
+            request: ImportanceRequest {
+                include_not_in_force: optional_bool_or(args, "include_not_in_force", false)?,
+                limit: optional_usize(args, "limit")?.unwrap_or(DEFAULT_PAGE_SIZE),
+                cursor: optional_string(args, "cursor")?,
+            },
+        })
+    }
+}
+
+/// The core for the `rank_decisions_by_importance` MCP tool: one page of the decisions ordered by
+/// what rests on them, each with who decided it. `truncated` says whether more follow and
+/// `data.next_cursor` resumes; a decision the record gives no reason to rank reads
+/// `not_assessed`, never a number. No model is called.
+pub(crate) fn rank_decisions_by_importance(
+    graph: &impl GraphView,
+    args: RankDecisionsByImportanceArgs,
+) -> Result<ToolOutput, CoreError> {
+    let response =
+        importance::rank_decisions_by_importance(graph, &args.request).map_err(CoreError::from)?;
     query_output(&response)
 }
 

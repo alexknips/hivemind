@@ -55,6 +55,10 @@
 //! - `GET  /v1/decisions/recall`                    — ranked search + text digest
 //! - `GET  /v1/decisions/why`                       — decision neighborhood, by id or free text
 //! - `GET  /v1/decisions/verify`                    — decision brief (still holds?), by id or free text
+//! - `GET  /v1/decisions/importance[?limit=][?cursor=][?include_not_in_force=]` — the decisions
+//!   ordered by what rests on them, most first, each with who decided it (a person or an agent);
+//!   a decision with no basis reads `not_assessed`, never a zero; `truncated` and
+//!   `data.next_cursor` page through it (hivemind-bbnw.9)
 //! - `GET  /v1/decisions/map[?alpha=0.5]`          — 2-D spectral decision map
 //! - `GET  /v1/attention/waiting[?limit=][?cursor=]`   — open asks with no answering decision,
 //!   oldest first
@@ -634,6 +638,10 @@ fn build_router(state: AppState) -> Router {
         // Static routes before dynamic /:id to avoid ambiguity
         .route("/v1/decisions/search", get(handlers::search_handler))
         .route("/v1/decisions/relevant", get(handlers::relevant_handler))
+        .route(
+            "/v1/decisions/importance",
+            get(handlers::importance_handler),
+        )
         .route("/v1/decisions/map", get(handlers::map_handler))
         // Fluent (no-id) read routes (hivemind-ot72.4)
         .route(

@@ -14,6 +14,7 @@ mod follows_from;
 mod grounding;
 mod grounding_facts;
 mod history;
+mod importance_facts;
 mod misfiled;
 mod neighborhood;
 mod outcome;
@@ -90,6 +91,9 @@ pub use grounding_facts::{
     GROUNDING_FACT_READS,
 };
 pub use history::*;
+pub use importance_facts::{
+    get_importance_facts, DecisionFacts, ImportanceFacts, ModelJudgedFacts, IMPORTANCE_FACT_READS,
+};
 pub use misfiled::{
     misfiled_next_cursor, require_registered_project, scan_misfiled_decisions,
     MisfiledDecisionCandidate, MisfiledScanRequest,

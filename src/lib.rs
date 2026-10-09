@@ -11,6 +11,7 @@ pub mod error;
 pub mod events;
 pub(crate) mod grounding;
 pub mod identity;
+pub mod importance;
 pub mod ingest;
 pub mod ledger;
 pub mod linear;

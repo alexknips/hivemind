@@ -16,6 +16,7 @@ use crate::events::{CaptureItem, EventProvenance, IngestTurn};
 use crate::grounding::{
     resolve_grounding, GroundingResolution, GroundingSpec, WIRE_GROUNDING_REFUSAL,
 };
+use crate::importance::{rank_decisions_by_importance, ImportanceRequest, DEFAULT_PAGE_SIZE};
 use crate::ledger::{EventLedger, SqliteEventLedger, TenantScopedLedger};
 use crate::possibly_related::{possibly_related, PossiblyRelatedRequest};
 use crate::projector::GraphView;
@@ -172,6 +173,15 @@ pub(super) struct SearchParams {
 pub(super) struct AttentionParams {
     limit: Option<usize>,
     cursor: Option<String>,
+}
+
+/// Query params of `GET /v1/decisions/importance`: the page, and whether to list decisions that
+/// are no longer in force.
+#[derive(Debug, Deserialize)]
+pub(super) struct ImportanceParams {
+    limit: Option<usize>,
+    cursor: Option<String>,
+    include_not_in_force: Option<bool>,
 }
 
 /// Query params of `GET /v1/attention/changed`: the window (RFC3339; `since` defaults to seven
@@ -948,6 +958,33 @@ pub(super) async fn contested_handler(
             cursor: params.cursor,
         };
         get_contested_decisions(&*graph, &request).map_err(to_api_error)
+    })
+    .await;
+
+    respond_envelope(result)
+}
+
+pub(super) async fn importance_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ImportanceParams>,
+) -> Response {
+    let ctx = match extract_ctx(&state, &headers).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+
+    let backend = Arc::clone(&state.backend);
+    let cache = Arc::clone(&state.graph_cache);
+    let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id, &cache)?;
+        let request = ImportanceRequest {
+            include_not_in_force: params.include_not_in_force.unwrap_or(false),
+            limit: params.limit.unwrap_or(DEFAULT_PAGE_SIZE),
+            cursor: params.cursor,
+        };
+        rank_decisions_by_importance(&*graph, &request).map_err(to_api_error)
     })
     .await;
 

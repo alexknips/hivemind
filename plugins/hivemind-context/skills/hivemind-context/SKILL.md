@@ -57,6 +57,18 @@ what it wants to ask.
   before editing an unfamiliar module, and again with `--since-branch-point`
   to catch what changed in HiveMind since you started working here.
 
+- **Which calls carry the most weight** — no question needed either. The
+  decisions with others resting on them, most first, each with who decided
+  it (a person or an agent):
+
+  ```bash
+  ${CLAUDE_PLUGIN_ROOT}/scripts/importance.sh
+  ```
+
+  A decision with nothing recorded about its weight reads `not_assessed`
+  and one nobody accepted reads `none_recorded`: report them as they are.
+  The actor that only recorded a decision is not its decider.
+
 - **Question second** — free text, not a decision id:
 
   ```bash
@@ -262,6 +274,7 @@ use the equivalent `mcp__hivemind__*` tool directly instead of the script:
 | `disagree.sh` | `disagree_decision` |
 | `supersede.sh` | `supersede_decision` |
 | `ground.sh` | `ground_decision` |
+| `importance.sh` | `rank_decisions_by_importance` |
 
 The first six are registered on the HTTP transport (`hivemind-ot72.6`
 through `.12`) and `ground_decision` is registered on both transports, so this
