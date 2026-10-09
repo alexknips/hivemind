@@ -178,25 +178,77 @@ impl ToolOutput {
     }
 }
 
-/// True for every tool that reads the ledger's decisions back. The write tools and the
-/// classification queue are named instead, so a tool added later carries the unreadable-rows
-/// notice (`read_notice`) unless someone says it never reads decisions.
+/// What a tool does to the ledger. Declared once per tool in [`TOOL_KINDS`]; everything that
+/// treats reads and writes differently asks the table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolKind {
+    /// Appends events. Once started it runs to its result: cutting it off would answer
+    /// "failed" about an event that is recorded (hivemind-s9cx).
+    Write,
+    /// Reads decisions back, so its reply carries the unreadable-rows notice (`read_notice`).
+    ReadDecisions,
+    /// Reads, but not decisions: the classification queue.
+    ReadOther,
+}
+
+impl ToolKind {
+    /// A read has nothing to commit, so the server may stop waiting for it.
+    pub(crate) fn is_read(self) -> bool {
+        !matches!(self, ToolKind::Write)
+    }
+}
+
+/// The kind of every tool in `tool_definitions`. A tool added without a row here fails
+/// `every_tool_has_a_kind`, instead of silently running unbounded or without the notice.
+pub(crate) const TOOL_KINDS: &[(&str, ToolKind)] = &[
+    ("capture_decision", ToolKind::Write),
+    ("capture_evidence", ToolKind::Write),
+    ("capture_hypothesis", ToolKind::Write),
+    ("disagree_decision", ToolKind::Write),
+    ("supersede_decision", ToolKind::Write),
+    ("move_decision", ToolKind::Write),
+    ("retitle_decision", ToolKind::Write),
+    ("acknowledge_suggestion", ToolKind::Write),
+    ("ground_decision", ToolKind::Write),
+    ("request_decision", ToolKind::Write),
+    ("classify_queue_submit", ToolKind::Write),
+    ("classify_queue_list", ToolKind::ReadOther),
+    ("get_waiting_requests", ToolKind::ReadDecisions),
+    ("get_contested_decisions", ToolKind::ReadDecisions),
+    ("get_changed_decisions", ToolKind::ReadDecisions),
+    ("get_decision", ToolKind::ReadDecisions),
+    ("get_decision_outcome", ToolKind::ReadDecisions),
+    ("decision_quality_candidates", ToolKind::ReadDecisions),
+    ("get_decision_context", ToolKind::ReadDecisions),
+    ("decision_context_candidates", ToolKind::ReadDecisions),
+    ("score_decision", ToolKind::ReadDecisions),
+    ("scan_decision_quality", ToolKind::ReadDecisions),
+    ("get_suggestions", ToolKind::ReadDecisions),
+    ("scan_misfiled_decisions", ToolKind::ReadDecisions),
+    ("analyze_failure_modes", ToolKind::ReadDecisions),
+    ("get_relevant_decisions", ToolKind::ReadDecisions),
+    ("get_situational_decisions", ToolKind::ReadDecisions),
+    ("get_supersession_chain", ToolKind::ReadDecisions),
+    ("get_decision_neighborhood", ToolKind::ReadDecisions),
+    ("search_decisions", ToolKind::ReadDecisions),
+    ("recall_decisions", ToolKind::ReadDecisions),
+    ("recent_decisions", ToolKind::ReadDecisions),
+    ("dump_graph", ToolKind::ReadDecisions),
+    ("hivemind_compact_view", ToolKind::ReadDecisions),
+    ("summarize_decisions", ToolKind::ReadDecisions),
+];
+
+/// The kind of the named tool, or `None` for a name that is not a tool.
+pub(crate) fn tool_kind(name: &str) -> Option<ToolKind> {
+    TOOL_KINDS
+        .iter()
+        .find(|(tool, _)| *tool == name)
+        .map(|(_, kind)| *kind)
+}
+
+/// True for every tool that reads the ledger's decisions back.
 pub(crate) fn tool_reads_decisions(name: &str) -> bool {
-    !matches!(
-        name,
-        "capture_decision"
-            | "capture_evidence"
-            | "capture_hypothesis"
-            | "disagree_decision"
-            | "supersede_decision"
-            | "move_decision"
-            | "retitle_decision"
-            | "acknowledge_suggestion"
-            | "ground_decision"
-            | "request_decision"
-            | "classify_queue_list"
-            | "classify_queue_submit"
-    )
+    tool_kind(name) == Some(ToolKind::ReadDecisions)
 }
 
 // ---------------------------------------------------------------------------

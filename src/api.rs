@@ -116,6 +116,7 @@ use crate::queries::{DecisionStatus, QueryResponse};
 use self::auth::{CachedJwks, WorkosConfig};
 
 mod auth;
+mod body_timeout;
 mod graph;
 mod handlers;
 mod mcp_http;
@@ -129,10 +130,12 @@ type MapCacheKey = (String, u64, u64);
 type MapCache = Arc<Mutex<HashMap<MapCacheKey, crate::map::MapResult>>>;
 type GraphCache = RwLock<HashMap<TenantId, (EventId, Arc<MemoryGraph>)>>;
 
-/// How long a read (GET, HEAD, OPTIONS) may run before the server answers 408. Writes have no
-/// such limit: see [`read_timeout_middleware`].
+/// How long a read (GET, HEAD, OPTIONS, or a read tool over `POST /mcp`) may run before the
+/// server cuts it off, and how long a request body may go without a byte before the server
+/// answers 408. Writes have no such limit once their body is in: see [`read_timeout_middleware`].
 const READ_TIMEOUT_SECS: u64 = 30;
-const MAX_CONCURRENT_REQUESTS: usize = 200;
+/// How many requests the server works on at once; the rest wait for a slot.
+pub const MAX_CONCURRENT_REQUESTS: usize = 200;
 
 // ---------------------------------------------------------------------------
 // Config
@@ -418,6 +421,9 @@ pub struct AppState {
     slack_app_signing_secret: Option<String>,
     /// Outbound Slack Web API client — see `api::slack::web`.
     slack_web: slack::SlackWebClient,
+    /// How long a read may run, and how long a request body may go without a byte, before the
+    /// server answers 408. [`READ_TIMEOUT_SECS`] unless a test shortens it.
+    read_timeout: Duration,
 }
 
 impl AppState {
@@ -456,6 +462,7 @@ impl AppState {
                 slack_client_secret: config.slack_client_secret.clone(),
                 slack_app_signing_secret: config.slack_signing_secret.clone(),
                 slack_web,
+                read_timeout: Duration::from_secs(READ_TIMEOUT_SECS),
             });
         }
 
@@ -483,6 +490,7 @@ impl AppState {
             slack_client_secret: config.slack_client_secret.clone(),
             slack_app_signing_secret: config.slack_signing_secret.clone(),
             slack_web,
+            read_timeout: Duration::from_secs(READ_TIMEOUT_SECS),
         })
     }
 }
@@ -591,11 +599,13 @@ pub fn create_router(config: &ApiConfig) -> Router {
 }
 
 /// [`create_router`] with the read timeout set by the caller, so a test can meet it without
-/// waiting 30 seconds. The server itself always runs with [`READ_TIMEOUT_SECS`].
+/// waiting 30 seconds. The timeout bounds a read and a request body that stalls. The server
+/// itself always runs with [`READ_TIMEOUT_SECS`].
 pub fn create_router_with_read_timeout(config: &ApiConfig, read_timeout: Duration) -> Router {
-    let state = AppState::from_config(config)
+    let mut state = AppState::from_config(config)
         .expect("failed to initialize API backend; check database URL");
-    build_router(state, read_timeout)
+    state.read_timeout = read_timeout;
+    build_router(state)
 }
 
 fn build_cors_layer(origins: &[String]) -> Option<CorsLayer> {
@@ -613,7 +623,8 @@ fn build_cors_layer(origins: &[String]) -> Option<CorsLayer> {
     )
 }
 
-fn build_router(state: AppState, read_timeout: Duration) -> Router {
+fn build_router(state: AppState) -> Router {
+    let read_timeout = state.read_timeout;
     let cors = build_cors_layer(&state.cors_origins);
     let router = Router::new()
         .route("/v1/health", get(handlers::health_handler))
@@ -763,10 +774,14 @@ fn build_router(state: AppState, read_timeout: Duration) -> Router {
         router
     };
 
-    // Read timeout (outermost, covers queue + processing) → ConcurrencyLimit (innermost). Each
-    // `.layer` wraps the ones before it, so the timeout is added last.
+    // Read timeout (outermost, covers queue + processing) → body timeout → ConcurrencyLimit
+    // (innermost). Each `.layer` wraps the ones before it, so the timeouts are added last.
     router
         .layer(GlobalConcurrencyLimitLayer::new(MAX_CONCURRENT_REQUESTS))
+        .layer(from_fn_with_state(
+            read_timeout,
+            body_timeout::request_body_timeout_middleware,
+        ))
         .layer(from_fn_with_state(read_timeout, read_timeout_middleware))
 }
 
@@ -779,7 +794,9 @@ fn build_router(state: AppState, read_timeout: Duration) -> Router {
 /// that takes. A read has nothing to commit, so 408 is honest for it.
 ///
 /// A request counts as a read when its method is safe (GET, HEAD, OPTIONS, TRACE). Every `POST`
-/// is a write, so a read tool called through `POST /mcp` is not cut off either.
+/// is a write here. The one `POST` that carries reads, `POST /mcp`, holds a write tool and a read
+/// tool alike, so it is not cut off here: its handler applies `timeout` to the read tools alone
+/// (see `mcp_http::mcp_http_handler`).
 async fn read_timeout_middleware(
     State(timeout): State<Duration>,
     request: Request,
@@ -832,7 +849,7 @@ pub async fn serve_http(state: AppState, config: &ApiConfig) -> crate::Result<()
     );
     slack::try_spawn_drain_loop(&state);
 
-    let app = build_router(state, Duration::from_secs(READ_TIMEOUT_SECS));
+    let app = build_router(state);
     let addr = SocketAddr::new(config.bind, config.port);
     let listener = tokio::net::TcpListener::bind(addr)
         .await

@@ -170,6 +170,62 @@ fn tools_list_includes_all_eighteen_tools() {
 }
 
 #[test]
+fn every_tool_has_a_kind() {
+    // A tool added to `tool_definitions` without a row in `TOOL_KINDS` would run unbounded
+    // over `POST /mcp` and skip the unreadable-rows notice. A row for a tool that is gone
+    // would hide the next mismatch.
+    let mut defined: Vec<String> = crate::mcp::tool_definitions()
+        .iter()
+        .map(|tool| tool["name"].as_str().expect("string name").to_owned()) // ubs:ignore: test-only; panicking is correct in tests
+        .collect();
+    let mut with_a_kind: Vec<String> = crate::mcp::core::TOOL_KINDS
+        .iter()
+        .map(|(name, _)| (*name).to_owned())
+        .collect();
+    defined.sort();
+    with_a_kind.sort();
+    let mut distinct = with_a_kind.clone();
+    distinct.dedup();
+    assert_eq!(distinct, with_a_kind, "a tool has two rows in TOOL_KINDS"); // ubs:ignore: test-only assertion
+    assert_eq!(
+        with_a_kind, defined,
+        "TOOL_KINDS and tool_definitions name different tools"
+    ); // ubs:ignore: test-only assertion
+}
+
+#[test]
+fn the_write_tools_are_the_tools_that_append_events() {
+    use crate::mcp::core::{tool_kind, ToolKind};
+    let writes: Vec<&str> = crate::mcp::core::TOOL_KINDS
+        .iter()
+        .filter(|(_, kind)| *kind == ToolKind::Write)
+        .map(|(name, _)| *name)
+        .collect();
+    assert_eq!(
+        writes,
+        [
+            "capture_decision",
+            "capture_evidence",
+            "capture_hypothesis",
+            "disagree_decision",
+            "supersede_decision",
+            "move_decision",
+            "retitle_decision",
+            "acknowledge_suggestion",
+            "ground_decision",
+            "request_decision",
+            "classify_queue_submit",
+        ]
+    ); // ubs:ignore: test-only assertion
+    assert_eq!(tool_kind("no_such_tool"), None); // ubs:ignore: test-only assertion
+    assert_eq!(tool_kind("classify_queue_list"), Some(ToolKind::ReadOther)); // ubs:ignore: test-only assertion
+    assert!(
+        !crate::mcp::core::tool_reads_decisions("classify_queue_list"),
+        "the queue listing reads, but not decisions: no unreadable-rows notice"
+    ); // ubs:ignore: test-only assertion
+}
+
+#[test]
 fn get_suggestions_takes_the_arguments_of_a_scan_and_exclude_acknowledged() {
     let tools = crate::mcp::tool_definitions();
     let properties = |name: &str| -> Value {

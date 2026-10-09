@@ -7,6 +7,10 @@
 //! is issued on `initialize` and accepted (but not enforced) on subsequent
 //! requests; under a person's credential it seeds the default actor_id for
 //! write operations (an agent token's own actor wins, see [`mcp_resolve_actor`]).
+//!
+//! A read tool is cut off after the server's read timeout, like a `GET`, and answers a tool
+//! error (`isError: true`) saying so. A write tool is never cut off: it runs to its result
+//! (hivemind-s9cx). Which is which comes from `TOOL_KINDS` (hivemind-g3vd0).
 
 use std::sync::Arc;
 
@@ -130,10 +134,34 @@ pub(super) async fn mcp_http_handler(
         "tools/call" => {
             let backend = Arc::clone(&state.backend);
             let cache = Arc::clone(&state.graph_cache);
-            let result = tokio::task::spawn_blocking(move || {
+            let tool = params
+                .get("name")
+                .and_then(|name| name.as_str())
+                .unwrap_or_default()
+                .to_owned();
+            let call = tokio::task::spawn_blocking(move || {
                 mcp_tools_call_blocking(&backend, &ctx, &session_id, params, &cache)
-            })
-            .await;
+            });
+            // A read has nothing to commit, so it is cut off like a GET. A write is not: its
+            // ledger work runs on after the answer is dropped, and "timed out" would be false
+            // about an event that is recorded (hivemind-s9cx).
+            let result = if tool_is_read(&tool) {
+                match tokio::time::timeout(state.read_timeout, call).await {
+                    Ok(result) => result,
+                    Err(_elapsed) => {
+                        return mcp_success_response(
+                            id,
+                            mcp_tool_err(format!(
+                                "request timed out after {:?}: `{tool}` only reads and was cut off, \
+                                 so nothing was recorded. Narrow the query or try again.",
+                                state.read_timeout
+                            )),
+                        );
+                    }
+                }
+            } else {
+                call.await
+            };
             match result {
                 Ok(Ok(v)) => mcp_success_response(id, v),
                 Ok(Err((code, msg))) => mcp_error_response(id, code, msg),
@@ -142,6 +170,12 @@ pub(super) async fn mcp_http_handler(
         }
         other => mcp_error_response(id, -32601, format!("unknown method: {other}")),
     }
+}
+
+/// True for a tool that only reads, so the server may stop waiting for it. The kind comes from
+/// `TOOL_KINDS`; a name that is not a tool answers its error at once and needs no deadline.
+fn tool_is_read(name: &str) -> bool {
+    crate::mcp::core::tool_kind(name).is_some_and(|kind| kind.is_read())
 }
 
 fn mcp_success_response(id: serde_json::Value, result: serde_json::Value) -> Response {

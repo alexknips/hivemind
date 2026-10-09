@@ -460,11 +460,25 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   failed when it was recorded, and a client that retried recorded it twice (on the city cell, one
   `capture_decision` retried three times after a 408 left four copies of one decision). Only reads
   (`GET`, `HEAD`, `OPTIONS`) are cut off at 30 seconds now; every `POST` runs to the end and
-  answers with what it did, however long that takes. That includes a read tool called through
-  `POST /mcp`, which has no time limit any more. A client should still treat a dropped
+  answers with what it did, however long that takes, except a read tool called through
+  `POST /mcp` (see the next entry). A client should still treat a dropped
   connection on a write as "outcome unknown" and look before it retries. An idempotency key,
   so that a retry is recognised, is a separate design and is not part of this change.
   (hivemind-s9cx)
+- **A client that stalls mid-request no longer holds one of the server's request slots, and a
+  read tool over `POST /mcp` is cut off at 30 seconds again.** The server read a request body
+  before any deadline, so a client that sent its headers and then went quiet kept one of the 200
+  concurrent-request slots until it disconnected. A request body that delivers nothing for 30
+  seconds is now abandoned with `408 request body timed out`; no handler has run by then, so
+  nothing is recorded. The 30 seconds are between bytes, not for the whole body, so a large
+  ledger replay batch on a slow link keeps going while it keeps arriving. A client that stalls
+  before its headers are complete holds a connection but no slot, and is not covered. Since the
+  previous entry a read tool called through `POST /mcp` (`recall_decisions`, `search_decisions`,
+  `dump_graph`, ...) had no time limit, and every town agent reaches the cell that way. A read
+  tool now answers a tool error (`isError: true`, "request timed out after 30s") at 30 seconds;
+  a write tool (`capture_decision`, `supersede_decision`, `classify_queue_submit`, ...) still
+  runs to its result. Which tool is which is declared once, in `TOOL_KINDS`; a tool added
+  without a kind fails a test. (hivemind-g3vd0)
 
 - **An option label that holds a comma now counts as one option in the text answers.** Since
   `--option` records a label such as `Rename after the comparison, before the first listing`
