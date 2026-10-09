@@ -15,6 +15,8 @@
 //! lists them as `open_options`, so an open question never reads as one that turned everything
 //! down.
 
+use std::borrow::Cow;
+
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
@@ -41,6 +43,18 @@ pub struct OptionLabel {
     /// immutable and `label` is a reading of it, so a reader is told what the record says.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recorded_as: Option<String>,
+}
+
+/// An option label as one countable unit inside a text list of labels. A label that holds the
+/// list's own punctuation (`,` or `;`) or a double quote is wrapped in double quotes, with inner
+/// quotes escaped, so `"Rename after the comparison, before the first listing", Pause` reads as
+/// two options. Any other label stays as it is. Text answers only: the JSON keeps labels whole.
+pub fn option_label_unit(label: &str) -> Cow<'_, str> {
+    if label.contains([',', ';', '"']) {
+        Cow::Owned(format!("\"{}\"", label.replace('"', "\\\"")))
+    } else {
+        Cow::Borrowed(label)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

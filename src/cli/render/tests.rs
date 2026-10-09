@@ -902,3 +902,39 @@ fn brief_lists_the_options_of_a_decision_nobody_has_decided_as_open_not_rejected
     assert!(!text.contains("  chose:"), "{text}");
     Ok(())
 }
+
+#[test]
+fn brief_sets_a_label_that_holds_list_punctuation_apart_in_quotes() -> Result<()> {
+    // hivemind-2gbo: three options read as three, however the labels are punctuated.
+    let scenario = Scenario::new();
+    scenario.proposal(
+        "human:alice",
+        "2026-01-01T00:00:00Z",
+        serde_json::json!({
+            "decision_id": "d:timing",
+            "title": "Rename timing",
+            "rationale": "Nobody has decided yet",
+            "topic_keys": ["brand"],
+            "option_ids": ["opt:1", "opt:2", "opt:3"],
+            "option_labels": [
+                "Rename now",
+                "Rename after the comparison, before the first listing",
+                "Say \"later\"; then ask"
+            ],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    )?;
+
+    let text = brief_text(&scenario.graph()?, "d:timing")?;
+
+    assert!(
+        text.contains(
+            "  options: Rename now, \"Rename after the comparison, before the first listing\", \
+             \"Say \\\"later\\\"; then ask\" (open"
+        ),
+        "{text}"
+    );
+    Ok(())
+}

@@ -18,9 +18,9 @@ use serde::Serialize;
 use crate::ledger::AnyLedger;
 use crate::projector::{GraphParams, GraphValue, GraphView};
 use crate::queries::{
-    content_query, fold_linked_results, get_decision, get_supersession_chain, search_decisions_any,
-    search_decisions_fluent, DecisionSearchResult, DecisionStatus, DecisionView, GroundingState,
-    QueryContext, QueryResponse, ScopeNote, SearchDecisionRequest,
+    content_query, fold_linked_results, get_decision, get_supersession_chain, option_label_unit,
+    search_decisions_any, search_decisions_fluent, DecisionSearchResult, DecisionStatus,
+    DecisionView, GroundingState, QueryContext, QueryResponse, ScopeNote, SearchDecisionRequest,
 };
 use crate::Result;
 
@@ -211,7 +211,10 @@ fn render_single(view: &DecisionView, option_labels: &[(String, String)]) -> Str
         parts.push(format!("Quote: \"{quote}\""));
     }
     if !option_labels.is_empty() {
-        let labels: Vec<&str> = option_labels.iter().map(|(_, l)| l.as_str()).collect();
+        let labels: Vec<_> = option_labels
+            .iter()
+            .map(|(_, l)| option_label_unit(l))
+            .collect();
         parts.push(format!("Options: {}", labels.join("; ")));
     }
     if let Some(chosen) = chosen_label(option_labels, view.chosen_option_id.as_deref()) {
@@ -788,7 +791,12 @@ fn render_digest_text(
             }
 
             if !entry.option_labels.is_empty() {
-                let opts = entry.option_labels.join(", ");
+                let opts = entry
+                    .option_labels
+                    .iter()
+                    .map(|label| option_label_unit(label))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 if let Some(chosen) = &entry.chosen_option_label {
                     let _ = writeln!(out, "  Options: {opts} — Chose: {chosen}");
                 } else {

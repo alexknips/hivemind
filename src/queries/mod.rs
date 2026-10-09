@@ -57,7 +57,8 @@ pub use attribution::{
     SignalBreakdown,
 };
 pub use brief::{
-    get_decision_brief, get_decision_brief_at, DecidedBy, DecisionBrief, OptionLabel, StillHolds,
+    get_decision_brief, get_decision_brief_at, option_label_unit, DecidedBy, DecisionBrief,
+    OptionLabel, StillHolds,
 };
 pub use capture_facts::{decision_capture_facts, recorded_decision_links, CaptureFact};
 pub use compact_view::{

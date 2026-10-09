@@ -17,8 +17,8 @@ use crate::projector::{
 };
 use crate::quality_profile::{Assessment, Dimension, ScanReport, ScoreReport};
 use crate::queries::{
-    annotate_resolution, derive_decision_status, derive_hypothesis_status, oriented_edges,
-    BlockerNotificationCandidates, ChangedDecisionsResults, CompactView, Contest,
+    annotate_resolution, derive_decision_status, derive_hypothesis_status, option_label_unit,
+    oriented_edges, BlockerNotificationCandidates, ChangedDecisionsResults, CompactView, Contest,
     ContestedDecisionsResults, DecidedBy, DecisionBlockerResults, DecisionBrief,
     DecisionSearchResults, DecisionStatus, DecisionTimeline, DecisionView,
     DecisionsAddedSinceResults, DecisionsChangedSinceResults, GroundingAdded, GroundingItem,
@@ -792,14 +792,14 @@ pub(crate) fn render_decision_brief_summary(brief: &Option<DecisionBrief>) -> St
 }
 
 /// Options as a person reads them, comma-separated, each followed by the record's own text when
-/// that reads differently.
+/// that reads differently. A label that holds a comma is quoted, so each option counts as one.
 fn option_labels(options: &[OptionLabel]) -> String {
     let mut labels = String::new();
     for (index, option) in options.iter().enumerate() {
         if index > 0 {
             labels.push_str(", ");
         }
-        labels.push_str(&option.label);
+        labels.push_str(&option_label_unit(&option.label));
         if let Some(recorded) = &option.recorded_as {
             let _ = write!(labels, " (recorded as: {recorded})");
         }

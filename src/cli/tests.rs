@@ -730,6 +730,107 @@ fn option_flag_keeps_a_comma_inside_its_label() -> CliTestResult {
 }
 
 #[test]
+fn text_answers_quote_an_option_label_that_holds_a_comma() -> CliTestResult {
+    // hivemind-2gbo: joined with ", ", a three-option decision read as four and "before the first
+    // listing" read as an option of its own. why, verify and digest quote the label that holds a
+    // comma so each option counts as one; the JSON keeps every label whole and unquoted.
+    let hivemind_dir = unique_test_dir("text-answers-quote-comma-label");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    let label = "Rename after the comparison, before the first listing";
+    run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:alice",
+        "--hivemind-dir",
+        dir,
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Rename timing for the plugin path",
+        "--rationale",
+        "The comparison decides which name survives, so the rename waits for its result.",
+        "--topic-keys",
+        "brand",
+        "--options",
+        "Rename now,Pause",
+        "--option",
+        label,
+        "--chose",
+        "Pause",
+    ]))?;
+
+    let quoted = format!("\"{label}\"");
+    for verb in ["why", "verify"] {
+        let summary = run(&Cli::parse_from([
+            "hivemind",
+            "--hivemind-dir",
+            dir,
+            "query",
+            verb,
+            "Rename timing for the plugin path",
+            "--summary",
+        ]))?;
+        ensure(
+            summary.contains("  chose: Pause\n"),
+            &format!("{verb} --summary names the chosen option, got:\n{summary}"),
+        )?;
+        let rejected = summary
+            .lines()
+            .find(|line| line.starts_with("  rejected: "))
+            .ok_or_else(|| format!("{verb} --summary lists the rejected options:\n{summary}"))?;
+        ensure(
+            rejected.contains(&format!("{quoted}, Rename now"))
+                || rejected.contains(&format!("Rename now, {quoted}")),
+            &format!("{verb} --summary sets the comma label apart, got: {rejected}"),
+        )?;
+    }
+
+    let digest = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        dir,
+        "digest",
+        "--window",
+        "7d",
+        "--summary",
+    ]))?;
+    let options = digest
+        .lines()
+        .find(|line| line.trim_start().starts_with("Options: "))
+        .ok_or_else(|| format!("digest --summary lists the options:\n{digest}"))?;
+    ensure(
+        options.contains(&quoted) && options.ends_with("— Chose: Pause"),
+        &format!("digest --summary sets the comma label apart, got: {options}"),
+    )?;
+
+    let json = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "why",
+        "Rename timing for the plugin path",
+    ]))?;
+    let json: serde_json::Value = serde_json::from_str(&json)?;
+    let mut rejected: Vec<&str> = json["data"]["root"]["rejected_options"]
+        .as_array()
+        .ok_or("rejected_options is an array")?
+        .iter()
+        .filter_map(|option| option["label"].as_str())
+        .collect();
+    rejected.sort_unstable();
+    ensure_eq(
+        rejected,
+        vec![label, "Rename now"],
+        "the JSON keeps the label whole, without quotes",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
 fn options_flag_refuses_a_piece_that_is_not_a_clean_label() -> CliTestResult {
     // hivemind-0cbl: the leading space of " before the first listing" is the mark of a comma
     // inside a label. It is refused, with the way to pass the label whole, not trimmed into a

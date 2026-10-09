@@ -457,6 +457,17 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   connection on a write as "outcome unknown" and look before it retries. An idempotency key,
   so that a retry is recognised, is a separate design and is not part of this change.
   (hivemind-s9cx)
+
+- **An option label that holds a comma now counts as one option in the text answers.** Since
+  `--option` records a label such as `Rename after the comparison, before the first listing`
+  whole, `why --summary`, `verify --summary` and `digest --summary` still joined every label
+  with `, `, so a three-option decision read as four and "before the first listing" read as an
+  option of its own. A label that holds a comma, a semicolon or a double quote is now set apart
+  in double quotes (`rejected: "Rename after the comparison, before the first listing", Rename
+  now`); every other label reads as before. The same goes for the `Options:` line of
+  `summarize_decisions`. The JSON answers are unchanged: each label stays whole and unquoted.
+  (hivemind-2gbo)
+
 - **A decision nobody has decided yet no longer lists every option as rejected.** A decision
   captured with its options and no choice (an open question, or an MCP capture whose chosen
   option did not arrive) read as one that rejected everything: `why --summary` printed
