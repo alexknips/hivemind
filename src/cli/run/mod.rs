@@ -935,6 +935,12 @@ pub(crate) fn run_emit_in_context<W: IoWrite>(
             )?;
             let reminder = project_reminder(&project, &proposal.placement);
             announce_placement(cli, &proposal.placement, reminder.as_deref(), notices);
+            announce_cited_not_linked(
+                cli,
+                &proposal.decision_id,
+                &proposal.cited_not_linked,
+                notices,
+            );
             return format_capture_output(
                 cli.json,
                 &CaptureCommandOutput {
@@ -946,6 +952,7 @@ pub(crate) fn run_emit_in_context<W: IoWrite>(
                     placement: proposal.placement,
                     rests_on: resolved.label(proposal.rests_on),
                     premise_stale: proposal.premise_stale,
+                    cited_not_linked: proposal.cited_not_linked,
                     question_id: proposal.question.map(|question| question.question_id),
                 },
             );
@@ -1137,6 +1144,26 @@ fn announce_placement<W: IoWrite>(
         if let Some(reminder) = reminder {
             let _ = writeln!(notices, "{reminder}");
         }
+    }
+}
+
+/// Text mode only: name each decision the rationale cites by id that the capture does not rest
+/// on, on `notices` (stderr in the CLI) so the bare id on stdout stays what scripts parse. A hint:
+/// the capture is recorded, and `ground` adds the link. JSON replies carry `cited_not_linked`.
+fn announce_cited_not_linked<W: IoWrite>(
+    cli: &Cli,
+    decision_id: &str,
+    cited_not_linked: &[String],
+    notices: &mut W,
+) {
+    if cli.json {
+        return;
+    }
+    for cited_id in cited_not_linked {
+        let _ = writeln!(
+            notices,
+            "cited_not_linked: {cited_id} (the rationale names it, but the decision does not rest on it; if it follows from it: hivemind ground --id {decision_id} --rests-on-decision {cited_id})"
+        );
     }
 }
 

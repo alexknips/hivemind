@@ -746,6 +746,103 @@ fn capture_decision_takes_a_question_alone_and_two_captures_share_its_node() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A `capture_decision` request whose rationale carries `rationale_note`, grounded on `grounding`.
+fn capture_with_rationale_note(id: u64, title: &str, note: &str, grounding: Value) -> String {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/call",
+        "params": {
+            "name": "capture_decision",
+            "arguments": {
+                "grounding": grounding,
+                "actor_id": "agent:claude:hivemind-crew",
+                "title": title,
+                "rationale": format!("Spelled out in full sentences: {note}"),
+                "topic_keys": ["storage"],
+                "options": [{"label": "Only option"}],
+                "chosen_option_label": "Only option"
+            }
+        }
+    })
+    .to_string()
+}
+
+#[test]
+fn capture_decision_says_which_cited_decision_it_does_not_rest_on() {
+    let dir = unique_dir("cited-not-linked");
+    let config = McpConfig::new(&dir).with_session_id("scribe-session");
+
+    let first = capture_with_rationale_note(
+        1,
+        "Use SQLite for the prototype",
+        "an early storage call",
+        json!([{"kind": "bet"}]),
+    );
+    let first_reply = drive(&config, &[first.as_str()]);
+    let cited_id = first_reply[0]["result"]["structuredContent"]["decision_id"]
+        .as_str()
+        .expect("decision id")
+        .to_owned();
+    assert!(
+        first_reply[0]["result"]["structuredContent"]
+            .get("cited_not_linked")
+            .is_none(),
+        "a capture that cites nothing says nothing"
+    );
+
+    // The short form: a full uuid group such as `612a` reads as a bare list item and is refused.
+    let cited_short = &cited_id[.."decision-".len() + 8];
+    let mentions = capture_with_rationale_note(
+        2,
+        "Keep SQLite for the first tenant",
+        &format!("this carries on from {cited_short} unchanged"),
+        json!([{"kind": "bet"}]),
+    );
+    let rests_on = capture_with_rationale_note(
+        3,
+        "Keep SQLite for the second tenant",
+        &format!("this carries on from {cited_short} unchanged"),
+        json!([{"kind": "decision", "decision_id": cited_id}]),
+    );
+    let responses = drive(&config, &[mentions.as_str(), rests_on.as_str()]);
+
+    assert_eq!(
+        responses[0]["result"]["structuredContent"]["cited_not_linked"],
+        json!([cited_id]),
+        "{:?}",
+        responses[0]
+    );
+    assert_eq!(
+        responses[0]["result"]["isError"],
+        Value::Bool(false),
+        "a hint never refuses the capture"
+    );
+    assert!(
+        responses[1]["result"]["structuredContent"]
+            .get("cited_not_linked")
+            .is_none(),
+        "resting on it leaves nothing to say: {:?}",
+        responses[1]
+    );
+
+    let ledger = SqliteEventLedger::open(&dir).expect("ledger opens");
+    let events = crate::ledger::EventLedger::read(&ledger, 0, 64).expect("events read");
+    let follows_from = events
+        .iter()
+        .filter(|event| {
+            event.event_type == crate::events::EventType::RelationAdded
+                && event.payload["relation"] == "FOLLOWS_FROM"
+        })
+        .count();
+    assert_eq!(
+        follows_from, 1,
+        "only the capture that named it as a premise"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn ground_decision_answers_alone_links_the_decision_to_its_question() {
     let dir = unique_dir("ground-answers");

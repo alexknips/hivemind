@@ -196,6 +196,67 @@ plugins/hivemind-capture/scripts/capture.sh "Keep the retry budget at 3" \
   --evidence-source "https://example.test/incidents/june"
 ```
 
+### A decision you name is a link, not prose
+
+When your rationale or question names an earlier decision, by its id
+(`decision-...`) or by its title, that decision is what yours follows from.
+Record it with `--rests-on-decision`. A rationale that only mentions it leaves no
+link: the earlier decision shows no dependents, and `verify` on it cannot say that
+yours rests on it.
+
+- Know only the title? Look it up first, with `query recall "<title>"` or the
+  `hivemind-context` plugin's `/hivemind-context:recall`, then pass the
+  description, `#N` or id it printed. Never invent an id.
+- The mention in the rationale can stay. The link does not replace the sentence;
+  it makes the sentence something the graph can follow.
+- A decision your capture replaces is not a premise. That is a supersession (see
+  above).
+- A capture whose rationale names no earlier decision needs no parent. Do not
+  link by guesswork: not to the nearest foundational decision, not to a sibling
+  task. Naming it is the trigger, not sharing a topic or a bead.
+- If the reply lists `cited_not_linked`, the rationale names those decisions but
+  the capture does not rest on them. If your decision follows from one, add it with
+  `hivemind ground --id <decision id> --rests-on-decision <cited id>`. If it only
+  mentions it, leave it. The capture is recorded either way.
+
+### A person's ruling is their decision, not your evidence
+
+When what your decision rests on is a person's ruling ("Alex ruled A in Slack",
+"go with B" in a session) and no decision records that ruling yet, record the
+ruling first, as that person's decision, and capture yours as following from it:
+
+1. The ruling: `--decided-by human:<name>` with `--chose`, their words in `--quote`
+   paired with `--question`, as in the section above.
+2. Your decision: `--rests-on-decision` the id step 1 printed (or `'#N'`).
+
+If recall already shows the ruling as a decision, skip step 1 and rest on it.
+
+```bash
+plugins/hivemind-capture/scripts/capture.sh "Alex: drop the commercial licence line" \
+  --kind decision \
+  --title "Drop the 'commercial licence available' README line" \
+  --rationale "AGPL only and free self-hosting fits one engineer and their agents; add the line back the day a company asks" \
+  --topic-keys packaging \
+  --options "Drop the line,Keep the line" \
+  --chose "Drop the line" \
+  --decided-by human:alex \
+  --quote "drop the commercial licence available line (AGPL only, self-host free)" \
+  --question "Should the README keep the commercial licence line?" \
+  --rests-on-decision "packaging: nothing paywalled until after the own-use trial"
+
+plugins/hivemind-capture/scripts/capture.sh "Rewrite the README licence section" \
+  --kind decision \
+  --title "State AGPL-3.0 and free self-hosting in one README sentence" \
+  --rationale "Follows Alex's ruling to drop the commercial licence line, so the README carries no commercial wording" \
+  --topic-keys packaging \
+  --options "One sentence,A licence section" \
+  --chose "One sentence" \
+  --rests-on-decision "Drop the 'commercial licence available' README line"
+```
+
+Never `--rests-on-evidence "Alex ruled ..."`: that files a person's decision as
+something you observed, and the record loses who decided.
+
 ### Confidence, and the question it answers
 
 - Pass `--confidence low|medium|high` only when the decider's own words say how
@@ -816,6 +877,10 @@ Do not invent a `capture_node_id`; a capture's target is derived from
 - Say what every decision rests on, and never file the decider's own words as
   evidence: they go in `--quote` with `--question`. Do not invent a grounding to
   get past the refusal; a bet is the honest answer when there is nothing yet.
+- When your rationale names an earlier decision, record it with
+  `--rests-on-decision` (look it up first if you only know the title). When what
+  you rest on is a person's ruling, record the ruling as their decision
+  (`--decided-by`) and rest yours on it; it is not your evidence.
 - Prefer `decision.capture` for new bundled proposals. Use direct event verbs
   only for status transitions or graph relations that already have ids.
 

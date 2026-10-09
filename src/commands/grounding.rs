@@ -10,7 +10,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::error::CommandError;
-use crate::events::HypothesisKind;
+use crate::events::{EventType, HypothesisKind};
 use crate::ledger::EventLedger;
 use crate::util::require_non_empty;
 use crate::Result;
@@ -104,8 +104,70 @@ pub struct GroundedProposal {
     pub rests_on: Vec<RestsOn>,
     /// Premise decisions already superseded or rejected when named.
     pub premise_stale: Vec<DecisionId>,
+    /// Existing decisions the rationale names by id that the grounding does not list as
+    /// premises (hivemind-dy6b8). A hint for the caller, who can add the link with `ground`:
+    /// the capture is recorded either way and nothing is linked on the caller's behalf.
+    pub cited_not_linked: Vec<DecisionId>,
     /// The question the decision answers, when the capture named one.
     pub question: Option<AnsweredQuestion>,
+}
+
+/// The first eight hex digits of a decision's uuid: the short form of an id, as it is quoted in
+/// prose (`decision-0d40fa67`).
+const SHORT_ID_HEX_DIGITS: usize = 8;
+/// The hex digits of the groups after the first eight in a full uuid, each group led by `-`.
+const UUID_TAIL_GROUPS: [usize; 4] = [4, 4, 4, 12];
+
+/// Every decision id `text` names, in order of first appearance and without repeats: `decision-`
+/// followed by a full uuid, or by its first eight hex digits. Lowercase hex only, as ids are
+/// generated; a longer run of letters or digits is a word, not an id.
+pub(super) fn cited_decision_ids(text: &str) -> Vec<String> {
+    const PREFIX: &str = "decision-";
+    let is_hex = |byte: &u8| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte);
+    let mut cited: Vec<String> = Vec::new();
+    for (start, _) in text.match_indices(PREFIX) {
+        // `pre-decision-...` or `xdecision-...` is part of a longer word.
+        if text[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|before| before.is_alphanumeric() || before == '-' || before == '_')
+        {
+            continue;
+        }
+        let tail = &text.as_bytes()[start + PREFIX.len()..];
+        if tail.len() < SHORT_ID_HEX_DIGITS || !tail[..SHORT_ID_HEX_DIGITS].iter().all(is_hex) {
+            continue;
+        }
+        let mut end = SHORT_ID_HEX_DIGITS;
+        let mut cursor = SHORT_ID_HEX_DIGITS;
+        let mut full = true;
+        for group in UUID_TAIL_GROUPS {
+            let group_end = cursor + 1 + group;
+            if tail.get(cursor) == Some(&b'-')
+                && tail.len() >= group_end
+                && tail[cursor + 1..group_end].iter().all(is_hex)
+            {
+                cursor = group_end;
+            } else {
+                full = false;
+                break;
+            }
+        }
+        if full {
+            end = cursor;
+        }
+        if tail.get(end).is_some_and(u8::is_ascii_alphanumeric) {
+            continue;
+        }
+        let id = format!(
+            "{PREFIX}{}",
+            &text[start + PREFIX.len()..start + PREFIX.len() + end]
+        );
+        if !cited.contains(&id) {
+            cited.push(id);
+        }
+    }
+    cited
 }
 
 /// How new grounding nodes get their ids.
@@ -320,6 +382,10 @@ impl<L: EventLedger> Commands<'_, L> {
         let (project, _) = self.resolve_stated_project(input.project)?;
         self.require_topics_declared(project.as_deref(), input.topic_keys)?;
 
+        // A read, so it comes before the first append: a failure here leaves nothing written.
+        let cited_not_linked =
+            self.cited_decisions_not_linked(input.rationale, &plan.premise_decision_ids)?;
+
         self.record_planned_nodes(input.actor_id, &planned)?;
         let (decision_id, placement, event_ids) =
             self.propose_decision_detailed(DecisionProposalInput {
@@ -338,6 +404,7 @@ impl<L: EventLedger> Commands<'_, L> {
             placement,
             rests_on: planned.rests_on(&plan.premise_decision_ids),
             premise_stale: event_ids.premise_stale,
+            cited_not_linked,
             question: event_ids.question,
         })
     }
@@ -430,5 +497,49 @@ impl<L: EventLedger> Commands<'_, L> {
             }
         }
         Ok(stale.into_iter().map(ToOwned::to_owned).collect())
+    }
+
+    /// The existing decisions `rationale` names by id (see `cited_decision_ids`) that are not in
+    /// `premise_decision_ids` (hivemind-dy6b8). A short id counts only when exactly one decision
+    /// starts with it; one that matches none or several is left out, never guessed. A read of the
+    /// ledger by literal id: no similarity, and nothing is written or linked.
+    pub(super) fn cited_decisions_not_linked(
+        &self,
+        rationale: &str,
+        premise_decision_ids: &[DecisionId],
+    ) -> Result<Vec<DecisionId>> {
+        let cited = cited_decision_ids(rationale);
+        if cited.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut matches: Vec<Vec<DecisionId>> = vec![Vec::new(); cited.len()];
+        self.for_each_event(|event| {
+            if event.event_type != EventType::DecisionProposed {
+                return;
+            }
+            let Some(decision_id) = event.payload.get("decision_id").and_then(|id| id.as_str())
+            else {
+                return;
+            };
+            for (id, found) in cited.iter().zip(matches.iter_mut()) {
+                let short = id.len() == "decision-".len() + SHORT_ID_HEX_DIGITS;
+                // ubs:ignore: decision IDs are public ledger IDs, not timing-sensitive secrets.
+                if decision_id == id || (short && decision_id.starts_with(id.as_str())) {
+                    found.push(decision_id.to_owned());
+                }
+            }
+        })?;
+        let mut not_linked: Vec<DecisionId> = Vec::new();
+        for mut found in matches {
+            found.sort();
+            found.dedup();
+            if let [decision_id] = found.as_slice() {
+                if !premise_decision_ids.contains(decision_id) && !not_linked.contains(decision_id)
+                {
+                    not_linked.push(decision_id.clone());
+                }
+            }
+        }
+        Ok(not_linked)
     }
 }

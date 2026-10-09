@@ -108,6 +108,18 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A capture whose rationale names an earlier decision by id, but does not rest on it, says so
+  in its reply.** When the rationale holds a `decision-...` id (the full id, or its first eight
+  hex digits when exactly one decision starts with them) that exists and is not among what the
+  capture rests on, the reply of `capture_decision`, `POST /v1/decisions` and
+  `emit decision.capture --json` lists it under `cited_not_linked` (text mode prints one line
+  per id on stderr, so the id on stdout stays what scripts read). It is a hint: the capture is
+  recorded either way, nothing is refused and nothing is linked for the caller;
+  `hivemind ground --id <decision id> --rests-on-decision <cited id>` adds the link. The
+  `hivemind-capture` skill and the `capture_decision` tool text now say to record a decision the
+  rationale names as `--rests-on-decision`, and to record a person's ruling as that person's
+  decision (`--decided-by`) that the agent's decision rests on, not as the agent's evidence.
+  (hivemind-dy6b8)
 - **`hivemind migrate --to-url` moves a SQLite ledger into a cell over HTTP, keeping each
   event's uuid, actor, source and time; nobody needs the database password.** It sends the
   events in batches to the new admin-key-gated `POST /v1/ledger/replay` (`tenant_id`,

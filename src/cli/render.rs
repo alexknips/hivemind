@@ -2361,6 +2361,10 @@ pub(crate) struct CaptureCommandOutput {
     pub(crate) project_reminder: Option<String>,
     pub(crate) rests_on: Vec<RestsOn>,
     pub(crate) premise_stale: Vec<String>,
+    /// Decisions the rationale names by id that the capture does not rest on; see
+    /// `GroundedProposal::cited_not_linked`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) cited_not_linked: Vec<String>,
     /// The question node the decision was linked to, when the capture named a question.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) question_id: Option<String>,

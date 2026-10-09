@@ -7134,3 +7134,196 @@ fn acknowledge_suggestion_needs_a_provenance_to_record_under() {
         .is_err());
     assert!(ledger.read(0, 10).expect("read succeeds").is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// A decision the rationale names by id but the capture does not rest on (hivemind-dy6b8)
+// ---------------------------------------------------------------------------
+
+/// A decision with a chosen id, so two of them can share the first eight hex digits.
+fn propose_with_fixed_id(commands: &Commands<'_, InMemoryEventLedger>, decision_id: &str) {
+    let option_id = commands
+        .record_option("actor:alice", "Only option", "The only option")
+        .expect("record option");
+    commands
+        .propose_decision_with_id(
+            DecisionProposalInput {
+                project: None,
+                grounding: Grounding::NotAsked,
+                expressed_confidence: None,
+                actor_id: "actor:alice",
+                title: "A decision with a chosen id",
+                rationale: "Rationale text long enough for the readable floor",
+                topic_keys: &["topic".to_owned()],
+                option_ids: std::slice::from_ref(&option_id),
+                option_labels: &["Only option".to_owned()],
+                chosen_option_id: None,
+                decided_by: None,
+                delegated_by: None,
+                still_proposed: true,
+                hypothesis_ids: &[],
+                evidence_ids: &[],
+                quote: None,
+                question: None,
+            },
+            decision_id,
+            super::DecisionProposalEventUuids {
+                proposal: Uuid::new_v4(),
+                has_option: vec![Uuid::new_v4()],
+                chose: None,
+                assumes: Vec::new(),
+                based_on: Vec::new(),
+                follows_from: Vec::new(),
+            },
+        )
+        .expect("propose with a chosen id");
+}
+
+#[test]
+fn cited_decision_ids_reads_full_and_short_ids_and_nothing_else() {
+    let full = "decision-dc82de96-148f-4529-9384-8b2bd7a5d41b";
+    let text = format!(
+        "Follows {full} and (decision-0d40fa67), again {full}; not pre-decision-1234abcd, \
+         decision-ABB50678, decision-abb506789, decision-1234abc, or decision-."
+    );
+    assert_eq!(
+        super::grounding::cited_decision_ids(&text),
+        vec![full.to_owned(), "decision-0d40fa67".to_owned()]
+    );
+    // A full id cut short, or followed by a word that happens to start with hex digits, reads
+    // as its short form.
+    for text in [
+        "decision-dc82de96-148f-4529 and so on",
+        "see decision-dc82de96-based",
+    ] {
+        assert_eq!(
+            super::grounding::cited_decision_ids(text),
+            vec!["decision-dc82de96".to_owned()],
+            "{text}"
+        );
+    }
+    assert!(super::grounding::cited_decision_ids("no ids here").is_empty());
+}
+
+#[test]
+fn grounded_capture_lists_a_decision_its_rationale_names_but_does_not_rest_on() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    // Fixed ids: a random uuid group such as `612a` reads as a bare list item and is refused.
+    let premise_id = "decision-cccccccc-0000-4000-8000-000000000002".to_owned();
+    let cited_id = "decision-bbbbbbbb-0000-4000-8000-000000000001".to_owned();
+    propose_with_fixed_id(&commands, &premise_id);
+    propose_with_fixed_id(&commands, &cited_id);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+    let labels = ["A".to_owned()];
+    let topics = ["topic".to_owned()];
+    // The cited decision by its full id and again by its short id, the premise it does rest on,
+    // and a short id that no decision starts with.
+    let short = &cited_id[.."decision-".len() + 8];
+    let rationale = format!(
+        "Follows {cited_id}, which {premise_id} also informed; {short} again, and (decision-ffffffff) is unknown"
+    );
+
+    let proposal = commands
+        .propose_grounded_decision(
+            DecisionProposalInput {
+                rationale: &rationale,
+                ..grounded_input(&option_id, &labels, &topics, "Adopt the new queue")
+            },
+            &GroundingPlan {
+                premise_decision_ids: vec![premise_id.clone()],
+                ..GroundingPlan::default()
+            },
+        )
+        .expect("the capture is recorded");
+
+    assert_eq!(proposal.cited_not_linked, vec![cited_id.clone()]);
+    let links: Vec<(String, String)> = relation_events(&ledger)
+        .iter()
+        .filter(|event| relation_str(event, "from_id") == proposal.decision_id)
+        .filter(|event| event.payload.get("relation") == Some(&json!(RelationKind::FollowsFrom)))
+        .map(|event| {
+            (
+                relation_str(event, "from_id").to_owned(),
+                relation_str(event, "to_id").to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        links,
+        vec![(proposal.decision_id.clone(), premise_id)],
+        "only what the capture rests on is linked; the hint links nothing"
+    );
+
+    // Once it does rest on the cited decision, there is nothing left to say.
+    let grounded = commands
+        .propose_grounded_decision(
+            DecisionProposalInput {
+                rationale: &format!("Follows {cited_id} directly and rests on it"),
+                ..grounded_input(
+                    &option_id,
+                    &labels,
+                    &topics,
+                    "Adopt the new queue, grounded",
+                )
+            },
+            &GroundingPlan {
+                premise_decision_ids: vec![cited_id.clone()],
+                ..GroundingPlan::default()
+            },
+        )
+        .expect("the grounded capture is recorded");
+    assert!(grounded.cited_not_linked.is_empty());
+}
+
+#[test]
+fn a_cited_id_that_matches_no_decision_or_several_is_not_reported() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let premise_id = propose_minimal_decision(&commands, "The decision it rests on");
+    propose_with_fixed_id(&commands, "decision-aaaaaaaa-0000-4000-8000-000000000001");
+    propose_with_fixed_id(&commands, "decision-aaaaaaaa-0000-4000-8000-000000000002");
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+    let labels = ["A".to_owned()];
+    let topics = ["topic".to_owned()];
+
+    let proposal = commands
+        .propose_grounded_decision(
+            DecisionProposalInput {
+                rationale: "Mentions decision-aaaaaaaa (two decisions start so), \
+                            decision-bbbbbbbb-0000-4000-8000-000000000003 (none exists) and no more",
+                ..grounded_input(&option_id, &labels, &topics, "Adopt the new queue")
+            },
+            &GroundingPlan {
+                premise_decision_ids: vec![premise_id.clone()],
+                ..GroundingPlan::default()
+            },
+        )
+        .expect("the capture is recorded");
+
+    assert!(
+        proposal.cited_not_linked.is_empty(),
+        "{:?}",
+        proposal.cited_not_linked
+    );
+    // A full id of one of the two is exact, so it is reported.
+    let exact = commands
+        .propose_grounded_decision(
+            DecisionProposalInput {
+                rationale: "Mentions decision-aaaaaaaa-0000-4000-8000-000000000002 and no more",
+                ..grounded_input(&option_id, &labels, &topics, "Adopt the new queue, exact")
+            },
+            &GroundingPlan {
+                premise_decision_ids: vec![premise_id],
+                ..GroundingPlan::default()
+            },
+        )
+        .expect("the capture is recorded");
+    assert_eq!(
+        exact.cited_not_linked,
+        vec!["decision-aaaaaaaa-0000-4000-8000-000000000002".to_owned()]
+    );
+}

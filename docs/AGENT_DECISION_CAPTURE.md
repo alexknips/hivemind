@@ -59,9 +59,10 @@ An existing evidence or hypothesis id (`--evidence`, `--hypotheses`) also counts
 `--confidence low|medium|high` records the decider's own stated confidence; omit
 it otherwise. The decider's own words are not a grounding; they go in `--quote`.
 A capture that names nothing exits 2 with the four ways to answer and writes
-nothing. The reply lists `rests_on` (what was recorded) and `premise_stale` (named
+nothing. The reply lists `rests_on` (what was recorded), `premise_stale` (named
 decisions already superseded or rejected — the link is recorded, and the
-staleness is visible). MCP `capture_decision` / `supersede_decision` and REST
+staleness is visible) and, when the rationale names a decision by id that the capture
+does not rest on, `cited_not_linked`. MCP `capture_decision` / `supersede_decision` and REST
 `POST /v1/decisions` take the same answers as a required `grounding` array. Raw
 `emit decision.proposed`, classifier ingest, document import and Slack capture do
 not ask the question.
@@ -97,6 +98,24 @@ says the decision holds because someone said so. The words go in `--quote`
 (verbatim), paired with `--question` and `--decided-by`; then ask what those words
 rest on (the observation behind them, a decision they follow from, an
 assumption), and declare a `--bet` when nothing is known.
+
+**A decision you name is a link, not prose.** When the rationale or question names an
+earlier decision (its `decision-...` id or its title), that decision is what the new one
+follows from: pass it as `--rests-on-decision` (MCP `grounding` kind `decision`), looking it
+up first with `recall` when only the title is known. A mention in the rationale alone leaves
+no `FOLLOWS_FROM` link, so the earlier decision shows no dependents. Nothing requires a
+parent: a capture whose rationale names none records without one, and nothing is linked by
+topic, bead id or similarity. When the rationale does name a decision by id (a full id, or
+its first eight hex digits when exactly one decision starts with them) that the grounding
+does not list, the reply says so in `cited_not_linked` (text mode: a line on stderr). It is
+a hint only: the capture is recorded, nothing is linked for the caller, and
+`hivemind ground --id <decision id> --rests-on-decision <cited id>` adds the link.
+
+**A person's ruling is their decision, not the agent's evidence.** When what a decision
+rests on is a person's ruling and no decision records it yet, the ruling is captured first as
+that person's decision (`--decided-by human:<name>`, their words in `--quote` with
+`--question`) and the agent's decision rests on it with `--rests-on-decision`. Filing it as
+`--rests-on-evidence "Alex ruled ..."` stores a person's decision as prose the agent observed.
 
 `--confidence` comes only from the decider's own words ("pretty sure", "just a
 guess"); an agent's own certainty is never recorded, and the flag is omitted
