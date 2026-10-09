@@ -301,11 +301,31 @@ So where the words sit is compared before whether every word is somewhere:
   not enough: "why doesn't the page show when it was enabled or retired" is not
   answered with the decision whose title says "retired" and whose topic key says
   "page", when two decisions about the page's history hold all four words as well. The
-  question has no negation to blame, it is the same with or without one. Two
-  cases keep the old answer: the only decision that holds every word (there is no one
-  to list it among), and the decision the question names outright (its id or title is
-  the question, or it records the question as asked). A verb that writes is held to
-  more than that (next item). A decision that lacks a word has its own gate (above).
+  question has no negation to blame, it is the same with or without one. Two of three
+  words is a majority and not enough either, once two or more other decisions that hold
+  every word say one of the words in their own title or topic keys (hivemind-jis8): it
+  leaves a third of a short question to a rationale, and those siblings hold that third
+  as well as the leader does. "When was a rule retired on the page?" lists the
+  decisions about the page's history instead of naming the one that says "retired" in
+  its title and "page" in a topic key; the leader then needs all three words in its
+  headline. With one sibling or none, two of three still lead. Two cases keep the old answer: the only decision
+  that holds every word (there is no one to list it among, unless it is a thin match,
+  next item), and the decision the question names outright (its id or title is the
+  question, or it records the question as asked). A verb that writes is held to
+  more than that (the item after). A decision that lacks a word has its own gate (above).
+- The only decision that holds every word is not thereby the one asked about
+  (hivemind-jis8). "If I rename a decision, will old links to it break?" holds every
+  word in a decision about renaming the website: "rename" is in its title and the rest
+  of the question in its rationale, which is about the website's address. The decision
+  about how decision links are made lacks two of the five words and says "links" in
+  its title and topic keys. When one decision alone holds every word and its title and
+  topic keys contain fewer than two of the question's words (in any form, a part of a
+  longer word included; a question of one word needs it, so does a question of two),
+  and decisions that lack some words exist, a verb that only reads lists it first, the
+  close candidates after it with what each lacks (`outcome: ambiguous`), instead of
+  naming it alone. With no close candidate there is no one to list it among and it is
+  answered with; so is a decision the question names outright. A verb that writes keeps
+  the old rule: the one decision that holds every word is what it picks.
 - **A verb that writes is never answered with a full match by where the words sit**
   (hivemind-293q). `disagree`, `retitle`, `move`, `supersede`, `ground` and a grounding
   premise say that a description that matches more than one decision lists the
@@ -531,9 +551,12 @@ share the rank tier are still `Ambiguous`. Two that each had one word in their t
 used to tie however many of the other words each held in its title; they no longer do.
 Resolved also needs the one that holds the best of all three to be about the question
 when it is not the only decision holding every word: its own title and topic keys must
-hold more than half of the question's words, or the full matches are listed
-(hivemind-5ctc, *what the question is about*, §1.1). That is the gate of a verb that
-only reads. The gate of a verb that writes is stricter, as the paragraph above asks for
+hold more than half of the question's words (all three of a three-word question, when two
+or more of the other full matches are on its subject), or the full matches are listed
+(hivemind-5ctc, hivemind-jis8, *what the question is about*, §1.1). The only one that
+holds every word is listed among the close candidates when it says fewer than two of the
+words in its headline and there are close candidates (hivemind-jis8). That is the gate of
+a verb that only reads. The gate of a verb that writes is stricter, as the paragraph above asks for
 write verbs: with several decisions holding every word, only the one the description
 names outright (rank 0: its id or title, or the question it records) is Resolved, and
 where the words sit orders the list without ever picking from it (hivemind-293q,

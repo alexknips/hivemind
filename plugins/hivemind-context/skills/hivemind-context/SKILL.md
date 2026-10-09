@@ -205,12 +205,15 @@ that one comes first (and `why` answers with it, opening with its `close match:`
 that line the same way: the decision lacks the words it names.
 
 When several decisions hold every word, `why` answers with the first of them alone only if its
-own title and topic keys hold more than half of your words. A decision that leads by one word
-in its title, with the rest only in its rationale, is listed with the others (`outcome:
-ambiguous`, nothing in `missing_terms`) instead of being named as the one you asked about. Read
-the list; if none of it is the decision you meant, ask again with other words or with `--id`. A
-decision that is the only one holding every word, or that records your question as asked, is
-still answered with.
+own title and topic keys hold more than half of your words (all three, in a three-word question
+when two or more of the others sit on the same subject). A decision that leads by one word in its
+title, with the rest only in its rationale, is listed with the others (`outcome: ambiguous`,
+nothing in `missing_terms`) instead of being named as the one you asked about. Read the list; if none of it is the decision
+you meant, ask again with other words or with `--id`. A decision that records your question as
+asked is still answered with, and so is the only one holding every word, unless fewer than two of
+your words are in its title and topic keys: then `why` lists it first, with the decisions that
+lack some of your words after it (each naming what it lacks), because a decision that holds your
+words only in its rationale is often about something else.
 
 A newer hivemind also folds a decision that was recorded more than once and
 linked as the same decision: the answer shows the earliest matching record and

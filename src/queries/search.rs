@@ -1029,11 +1029,15 @@ struct ScoredDecisionSearchResult {
     headline_terms: usize,
     /// `SearchMatchInfo::headline_hits` for a decision below the bar, else 0.
     headline_hits: usize,
+    /// `SearchMatchInfo::headline_hits` for every decision: what orders the resolver's ties.
+    headline_hit_count: usize,
     /// `SearchMatchInfo::stand_in_terms`.
     stand_ins: usize,
     /// How many of the question's words the decision's own title and topic keys hold as a word or
     /// a form of one (`SearchMatchInfo::headline_words`); 0 for a literal match.
     headline_words: usize,
+    /// `SearchMatchInfo::headline_matched`.
+    headline_matched: usize,
     /// How much of the question the decision's title, topic keys and recorded question carry
     /// (`About`); nothing for a literal match, which has no words to weigh.
     about: About,
@@ -1308,8 +1312,10 @@ fn collect_graph_search_results(
             } else {
                 0
             },
+            headline_hit_count: match_info.headline_hits,
             stand_ins: match_info.stand_in_terms,
             headline_words,
+            headline_matched: match_info.headline_matched,
             about: About::default(),
             promoted: false,
             fields,
@@ -1574,6 +1580,14 @@ pub(crate) struct ResolverCandidateRow {
     /// a form of one. Not `About`'s count: the question a decision records can be as long as a
     /// paragraph and holds a great many words, so it orders a decision but is never what names it.
     pub(crate) headline_words: usize,
+    /// How many of the question's words the decision's own title and topic keys hold in any form:
+    /// as a word, a form of one, a stand-in or a part of a longer word. Unlike `headline_terms`
+    /// it is counted for a full match too.
+    pub(crate) headline_matched: usize,
+    /// How many times its title and topic keys hold a term as a word (a term both hold counts
+    /// twice). Among candidates that tie on everything else that says where the words sit, the
+    /// decision filed under the word its title says is the one about it, before recency decides.
+    pub(crate) headline_hits: usize,
     /// How much of the question the decision's title, topic keys and recorded question carry
     /// (`About`).
     pub(crate) about: About,
@@ -1625,6 +1639,8 @@ pub(crate) fn collect_resolver_candidates(
             headline_terms: scored.headline_terms,
             stand_in_terms: scored.stand_ins,
             headline_words: scored.headline_words,
+            headline_matched: scored.headline_matched,
+            headline_hits: scored.headline_hit_count,
             about: scored.about,
             promoted: false,
         })
@@ -1686,6 +1702,9 @@ struct SearchMatchInfo {
     stand_in_reached: BTreeSet<usize>,
     /// The query is the decision's id or title, or the question it records, as written.
     named: bool,
+    /// How many of the terms the title or topic keys contain in any form (a word, a form of one, a
+    /// stand-in or a part of a longer word), for a full match as well as a close one.
+    headline_matched: usize,
     /// How many times a field of the title or topic keys holds a term as a word (a term the title
     /// and a topic key both hold counts twice). Among decisions below the bar that hold a word
     /// each, the one whose title and topic keys both name it is the one about it.
@@ -1966,11 +1985,13 @@ fn evaluate_search_match(
             field.field == "decision.title" && says_every_term(search_terms, &field.value)
         });
 
+    let headline_matched = headline_terms.len();
     Some(SearchMatchInfo {
         rank,
         below_bar,
         held_words,
         headline_words,
+        headline_matched,
         title_words,
         about_words,
         stand_in_headline,

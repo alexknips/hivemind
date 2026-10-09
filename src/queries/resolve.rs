@@ -46,6 +46,20 @@
 //! is answered with such a leader never: with other decisions holding every word, it gets the
 //! list.
 //!
+//! More than half is not enough of a short question (hivemind-jis8). Of three words, two leave a
+//! third to a long rationale that the other decisions on the same subject hold as well as the
+//! leader does, so a leader with two or more such siblings among the full matches (they say a
+//! word of the question in their own title or topic keys) also needs all three of the words in
+//! its title and topic keys.
+//!
+//! The only decision that holds every word is not thereby the one asked about either: with one
+//! word of a long question in its headline and the rest in its rationale ("if I rename a
+//! decision, will old links to it break?" is not about the website rename that says "rename" in
+//! its title), a verb that only reads lists it among the close candidates a full match used to
+//! drop, unless two of the words are in its title and topic keys, in any form, or the question
+//! names it outright. With no close candidate there is no one to list it among, and it is
+//! answered with, as is the only decision a verb that writes finds (`thin_sole_full_match`).
+//!
 //! A negation in the description ("don't adopt Kafka", "why didn't we ...", "do not ...") is not a
 //! word to find: it never appears in `missing_terms`. It is polarity. A decision is the opposite of
 //! a negated description when its own title says every word asked about outright, outside any
@@ -56,7 +70,7 @@
 //! whatever decision happens to say "no" somewhere, nor sent past the decision asked about because
 //! that decision states its answer positively.
 
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -87,6 +101,29 @@ const MIN_WORDS_TO_ANSWER_CLOSE: usize = 2;
 /// (`About`) but does not count here: it can be as long as a paragraph, and a decision with a
 /// long one holds nearly every common word as a word.
 const MIN_HEADLINE_WORDS_TO_ANSWER_CLOSE: usize = 2;
+
+/// Fewest of the question's words the title and topic keys of the only decision that holds every
+/// word must contain, in any form, before a read verb answers with it while other decisions hold
+/// most of them. The bar of a close candidate (`MIN_HEADLINE_WORDS_TO_ANSWER_CLOSE`), asked of a
+/// full match too: a decision that holds every word of a long question only in its rationale, with
+/// one word in its headline, is the one a long rationale holds a question's words in, not the one
+/// the question is about. A question of fewer words needs all of them.
+const MIN_HEADLINE_TERMS_TO_ANSWER_SOLE_FULL: usize = 2;
+
+/// Fewest of the question's words the title and topic keys of the first of several decisions that
+/// hold every word must hold, as words, before a read verb answers with it alone while
+/// `RIVALS_THAT_RAISE_THE_BAR` or more of the others are on its subject. That is on top of more
+/// than half of them: in a three-word question two is a majority and still leaves a third of the
+/// question to a long rationale, which the decisions on the same subject hold as well as it does
+/// (hivemind-jis8). A question of fewer words needs all of them.
+const MIN_HEADLINE_WORDS_TO_LEAD_RIVALS: usize = 3;
+
+/// How many other decisions that hold every word and say at least one of the question's words in
+/// their own title or topic keys it takes to be on the subject the leader is: a cluster of
+/// siblings, among which holding two of three words in the headline is a thin lead. Fewer than
+/// that, two of three words stay a lead (a decision with one rival on its subject is told apart
+/// by its title).
+const RIVALS_THAT_RAISE_THE_BAR: usize = 2;
 
 /// Why a decision that has every word asked is still only a close candidate: the description is
 /// negated and the decision's title says all of it outright. Shown beside the candidate wherever
@@ -193,6 +230,11 @@ pub fn resolve_decision_by_description(
 ///   in its own title or topic keys, it is `Resolved` with its `missing_terms` set, so the caller
 ///   shows the decision and names what it lacks. Equally close candidates, and a candidate whose
 ///   headline holds fewer than two of the words, stay an `Ambiguous` list (hivemind-tfde).
+///
+/// And for a description one decision alone matches in full, when that decision says fewer than two
+/// of the words in its title and topic keys and close candidates exist: it is `Ambiguous`, listed
+/// first, with the close candidates after it, so the decision that is about the question is not
+/// hidden behind a confident answer about another (hivemind-jis8).
 pub fn resolve_decision_for_reading(
     graph: &impl GraphView,
     description: &str,
@@ -254,27 +296,24 @@ fn resolve_for(
     for (row, promoted) in rows.iter_mut().zip(out_heading(&standings)) {
         row.promoted = promoted;
     }
+    // The close candidates a full match drops are kept aside: when the only full match turns out
+    // not to be the one asked about, they are what it is listed among.
+    let mut held_back: Vec<ResolverCandidateRow> = Vec::new();
     if !only_close_candidates {
-        rows.retain(|row| row.promoted || !row.is_close());
+        let (kept, dropped): (Vec<_>, Vec<_>) = rows
+            .into_iter()
+            .partition(|row| row.promoted || !row.is_close());
+        rows = kept;
+        held_back = dropped;
     }
-    rows.sort_by(|left, right| {
-        right
-            .promoted
-            .cmp(&left.promoted)
-            .then_with(|| {
-                right
-                    .missing_terms
-                    .is_empty()
-                    .cmp(&left.missing_terms.is_empty())
-            })
-            .then_with(|| right.about.cmp_about(&left.about))
-            .then_with(|| left.missing_terms.len().cmp(&right.missing_terms.len()))
-            .then_with(|| right.headline_terms.cmp(&left.headline_terms))
-            .then_with(|| left.stand_in_terms.cmp(&right.stand_in_terms))
-            .then_with(|| left.rank.cmp(&right.rank))
-            .then_with(|| right.event_origin.cmp(&left.event_origin))
-            .then_with(|| left.decision_id.cmp(&right.decision_id))
-    });
+    rows.sort_by(by_standing);
+    let term_count = resolver_terms(description).len();
+    let sole_match_is_thin =
+        asker == Asker::Reader && !held_back.is_empty() && thin_sole_full_match(term_count, &rows);
+    if sole_match_is_thin {
+        rows.extend(held_back);
+        rows.sort_by(by_standing_filed);
+    }
 
     let truncated = rows.len() > MAX_QUERY_RESULTS;
     rows.truncate(MAX_QUERY_RESULTS);
@@ -290,9 +329,8 @@ fn resolve_for(
             })
             .count()
     });
-    let term_count = resolver_terms(description).len();
     let leader_is_clear = asker == Asker::Reader && close_candidate_leads(term_count, &rows);
-    let full_leader_is_about_it = full_match_leads(asker, term_count, &rows);
+    let full_leader_is_about_it = !sole_match_is_thin && full_match_leads(asker, term_count, &rows);
 
     let leader_promoted = rows.first().is_some_and(|leader| leader.promoted);
     let mut candidates: Vec<ResolvedCandidate> = rows
@@ -338,6 +376,71 @@ fn resolve_for(
         latency_ms: started.elapsed().as_millis(),
         data: outcome,
     })
+}
+
+/// The order of a list and the pick of a verb that only reads: a close candidate that
+/// `out_heading` promoted, then the decisions that hold every word, then the one more about the
+/// question (`About`), the one that lacks fewer words, the one whose headline carries more of the
+/// words it matched, the one that leans on fewer stand-ins, then the rank tier, recency last.
+fn by_standing(left: &ResolverCandidateRow, right: &ResolverCandidateRow) -> Ordering {
+    standing_before_recency(left, right)
+        .then_with(|| right.event_origin.cmp(&left.event_origin))
+        .then_with(|| left.decision_id.cmp(&right.decision_id))
+}
+
+/// `by_standing`, except that between candidates that tie on everything but recency, the one that
+/// names a word in its title and its topic keys both comes first: it is filed under what it says
+/// it is about. The order of the list a thin sole full match heads, whose close candidates are
+/// mostly the decisions that say one word of the question and hold a few more somewhere in their
+/// rationale, and that recency alone would put in any order.
+fn by_standing_filed(left: &ResolverCandidateRow, right: &ResolverCandidateRow) -> Ordering {
+    standing_before_recency(left, right)
+        .then_with(|| right.headline_hits.cmp(&left.headline_hits))
+        .then_with(|| right.event_origin.cmp(&left.event_origin))
+        .then_with(|| left.decision_id.cmp(&right.decision_id))
+}
+
+fn standing_before_recency(left: &ResolverCandidateRow, right: &ResolverCandidateRow) -> Ordering {
+    right
+        .promoted
+        .cmp(&left.promoted)
+        .then_with(|| {
+            right
+                .missing_terms
+                .is_empty()
+                .cmp(&left.missing_terms.is_empty())
+        })
+        .then_with(|| right.about.cmp_about(&left.about))
+        .then_with(|| left.missing_terms.len().cmp(&right.missing_terms.len()))
+        .then_with(|| right.headline_terms.cmp(&left.headline_terms))
+        .then_with(|| left.stand_in_terms.cmp(&right.stand_in_terms))
+        .then_with(|| left.rank.cmp(&right.rank))
+}
+
+/// How many of the decisions after the first of `rows` hold every word and say at least one of
+/// the question's words in their own title or topic keys: the siblings the leader has to be told
+/// apart from.
+fn rivals_on_the_subject(rows: &[ResolverCandidateRow]) -> usize {
+    rows.iter()
+        .skip(1)
+        .filter(|row| !row.is_close() && row.headline_words >= 1)
+        .count()
+}
+
+/// Whether the one decision that holds every word says too little of the question in its own title
+/// and topic keys to be named as the decision asked about, for a verb that only reads
+/// (`MIN_HEADLINE_TERMS_TO_ANSWER_SOLE_FULL`). Such a decision holds the words the way a long
+/// rationale does, and "if I rename a decision, will old links to it break?" is not about the
+/// website rename that says "rename" in its title and "old links break" in its rationale. The
+/// decision the question names outright is the one asked about whatever its words.
+fn thin_sole_full_match(term_count: usize, rows: &[ResolverCandidateRow]) -> bool {
+    let [only] = rows else {
+        return false;
+    };
+    !only.is_close()
+        && !only.promoted
+        && !only.about.is_named()
+        && only.headline_matched < term_count.min(MIN_HEADLINE_TERMS_TO_ANSWER_SOLE_FULL)
 }
 
 /// How far a candidate is from the description, smaller being closer: it lacks fewer of the
@@ -389,11 +492,15 @@ fn close_candidate_leads(term_count: usize, rows: &[ResolverCandidateRow]) -> bo
 /// than half of the question there and the rest only in a long rationale: it is not thereby the
 /// decision asked about, and naming it hides the others behind a confident answer (hivemind-5ctc).
 /// So it is answered with only when its own title and topic keys hold more than half of the
-/// question's words; otherwise the full matches are listed, most about the question first. The
-/// only decision that holds every word has none to be listed among, and the decision the question
-/// names outright (its id or title is the question, or it records the question as asked) is the
-/// one asked about whatever its words: both are answered with as before. A close candidate has
-/// its own gate (`close_candidate_leads`).
+/// question's words; and, when at least `RIVALS_THAT_RAISE_THE_BAR` other full matches are on its
+/// subject too, `MIN_HEADLINE_WORDS_TO_LEAD_RIVALS` of them (all of them, in a shorter question:
+/// two of three words is a majority and still a third of the question left to a rationale that
+/// its siblings hold as well, hivemind-jis8); otherwise the full matches are listed, most about
+/// the question first. The only decision that holds every word has none to be listed among, and the decision
+/// the question names outright (its id or title is the question, or it records the question as
+/// asked) is the one asked about whatever its words: both are answered with as before, the only
+/// one unless it is a thin match with close candidates to be listed among
+/// (`thin_sole_full_match`). A close candidate has its own gate (`close_candidate_leads`).
 ///
 /// A verb that writes is held to a stricter gate: where the words sit orders its list but never
 /// picks for it (hivemind-293q). A wrong answer for a verb that shows is a wrong decision shown;
@@ -409,7 +516,11 @@ fn full_match_leads(asker: Asker, term_count: usize, rows: &[ResolverCandidateRo
     match asker {
         Asker::Writer => rows.len() == 1 || first.about.is_named(),
         Asker::Reader => {
-            rows.len() == 1 || first.about.is_named() || first.headline_words * 2 > term_count
+            rows.len() == 1
+                || first.about.is_named()
+                || (first.headline_words * 2 > term_count
+                    && (first.headline_words >= term_count.min(MIN_HEADLINE_WORDS_TO_LEAD_RIVALS)
+                        || rivals_on_the_subject(rows) < RIVALS_THAT_RAISE_THE_BAR))
         }
     }
 }
@@ -421,6 +532,8 @@ fn absorb_record(shown: &mut ResolverCandidateRow, other: ResolverCandidateRow) 
     shown.rank = shown.rank.min(other.rank);
     shown.stand_in_terms = shown.stand_in_terms.min(other.stand_in_terms);
     shown.headline_words = shown.headline_words.max(other.headline_words);
+    shown.headline_matched = shown.headline_matched.max(other.headline_matched);
+    shown.headline_hits = shown.headline_hits.max(other.headline_hits);
     if other.about.cmp_about(&shown.about).is_gt() {
         shown.about = other.about;
     }

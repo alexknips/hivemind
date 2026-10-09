@@ -1774,7 +1774,13 @@ fn a_decision_whose_title_says_the_question_in_other_words_leads_one_with_a_gene
 /// is half and no more; the other two say one each and hold the rest in their rationales. The
 /// first is the most about the question and is not the decision asked about.
 fn audit_graph() -> Result<MemoryGraph> {
-    graph_from_events([
+    graph_from_events(audit_events(true))
+}
+
+/// The decisions of `audit_graph`, with or without the one about hidden rows (the second sibling
+/// of the decision that leads).
+fn audit_events(with_hidden: bool) -> Vec<Event> {
+    let mut events = vec![
         decision_proposed_because(
             1,
             "d:flagged",
@@ -1789,15 +1795,23 @@ fn audit_graph() -> Result<MemoryGraph> {
             "Each change is dated: the day a rule was enabled and the day it was retired. The page shows no date for older rows.",
             &["audit-page"],
         ),
-        decision_proposed_because(
+    ];
+    if with_hidden {
+        events.push(decision_proposed_because(
             3,
             "d:hidden",
             "Rows with no date stay hidden until the log gives a day",
             "The page shows only the rows that the log can place. A rule enabled earlier or retired earlier keeps no day.",
             &["audit-page"],
-        ),
-        decision_proposed(4, "d:queue", "Adopt async queue for billing", &["billing"]),
-    ])
+        ));
+    }
+    events.push(decision_proposed(
+        4,
+        "d:queue",
+        "Adopt async queue for billing",
+        &["billing"],
+    ));
+    events
 }
 
 #[test]
@@ -1833,13 +1847,56 @@ fn a_full_match_that_leads_on_half_the_words_in_its_headline_is_listed_not_answe
 }
 
 #[test]
+fn a_full_match_that_holds_two_of_three_words_in_its_headline_is_listed_not_answered() -> Result<()>
+{
+    let graph = audit_graph()?;
+
+    // Two of three words are in d:flagged's title and topic keys: more than half, and still a
+    // third of the question left to its rationale, which the two decisions about the history of
+    // the page hold as well (hivemind-jis8). "when was a rule retired on the page?" has the same
+    // three words.
+    for question in [
+        "why doesn't the page show when it was retired?",
+        "why does the page show when it was retired?",
+    ] {
+        for outcome in both_askers(&graph, question)? {
+            match outcome {
+                ResolveOutcome::Ambiguous { candidates } => {
+                    let ids: Vec<&str> =
+                        candidates.iter().map(|c| c.decision_id.as_str()).collect();
+                    assert_eq!(ids.first(), Some(&"d:flagged"), "{question:?}: {ids:?}");
+                    assert_eq!(ids.len(), 3, "{question:?}: {ids:?}");
+                    assert!(candidates.iter().all(|c| c.missing_terms.is_empty()));
+                }
+                other => panic!("{question:?} is listed, not answered: {other:?}"),
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_full_match_that_holds_two_of_three_words_is_answered_with_a_single_sibling() -> Result<()> {
+    // Without d:hidden, one other decision (d:history) holds every word and says one of them in
+    // its headline: the leader is told apart from it by its title, and two of three still lead.
+    let graph = graph_from_events(audit_events(false))?;
+    let question = "why doesn't the page show when it was retired?";
+
+    match reading(&graph, question)?.data {
+        ResolveOutcome::Resolved { candidate } => assert_eq!(candidate.decision_id, "d:flagged"),
+        other => panic!("one sibling does not raise the bar: {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
 fn a_full_match_whose_headline_holds_most_of_the_words_is_still_answered() -> Result<()> {
     let graph = audit_graph()?;
 
-    // Two of three words are in d:flagged's title and topic keys: more than half. A verb that
-    // shows answers with it. Two other decisions hold every word too, so a verb that writes is
-    // given all three, d:flagged first, and writes to none (hivemind-293q).
-    let question = "why doesn't the page show when it was retired?";
+    // Three of four words are in d:flagged's title and topic keys: more than half, and three. A
+    // verb that shows answers with it. Two other decisions hold every word too, so a verb that
+    // writes is given all three, d:flagged first, and writes to none (hivemind-293q).
+    let question = "why doesn't the audit page show when it was retired?";
     match reading(&graph, question)?.data {
         ResolveOutcome::Resolved { candidate } => {
             assert_eq!(candidate.decision_id, "d:flagged");
@@ -1860,7 +1917,8 @@ fn a_full_match_whose_headline_holds_most_of_the_words_is_still_answered() -> Re
 }
 
 #[test]
-fn the_only_decision_holding_every_word_is_answered_whatever_its_headline() -> Result<()> {
+fn the_only_decision_holding_every_word_is_answered_when_no_other_decision_is_close() -> Result<()>
+{
     let graph = graph_from_events([
         decision_proposed_because(
             1,
@@ -1872,7 +1930,7 @@ fn the_only_decision_holding_every_word_is_answered_whatever_its_headline() -> R
         decision_proposed(2, "d:queue", "Adopt async queue for billing", &["billing"]),
     ])?;
 
-    // Nothing else holds the words, so there is no one to list it among.
+    // Nothing else holds the words, close or not, so there is no one to list it among.
     for outcome in both_askers(
         &graph,
         "why doesn't the page show when it was enabled or retired?",
@@ -1881,6 +1939,71 @@ fn the_only_decision_holding_every_word_is_answered_whatever_its_headline() -> R
             ResolveOutcome::Resolved { candidate } => assert_eq!(candidate.decision_id, "d:notes"),
             other => panic!("the one decision that holds them all answers: {other:?}"),
         }
+    }
+    Ok(())
+}
+
+/// "if I rename a ticket, will old links to it break?" (hivemind-jis8). The shop decision holds
+/// all five words, but only "rename" in its headline: the rest sit in its rationale, which is about
+/// the shop's address, not about a ticket. The decision about slugs is the one asked about; it
+/// lacks "rename" and "break", and says "links" in its title and topic keys.
+fn rename_graph() -> Result<MemoryGraph> {
+    graph_from_events([
+        decision_proposed_because(
+            1,
+            "d:shop",
+            "The shop is renamed to Orchard; the tool keeps its name",
+            "Old links to a ticket page break unless the old address redirects, so the shop keeps a redirect for a year.",
+            &["naming"],
+        ),
+        decision_proposed_because(
+            2,
+            "d:slugs",
+            "Links use stable slugs, never title-derived ones",
+            "A slug follows the record's id, so a link keeps reaching the same ticket when its title changes and old links keep working.",
+            &["links"],
+        ),
+        decision_proposed(3, "d:queue", "Adopt async queue for billing", &["billing"]),
+    ])
+}
+
+#[test]
+fn the_only_full_match_that_says_one_word_in_its_headline_is_listed_among_the_close_candidates(
+) -> Result<()> {
+    let graph = rename_graph()?;
+
+    // d:shop is the only decision that holds every word, and says one of the five in its title.
+    // A verb that shows lists it first, with the decision that lacks two words after it, instead
+    // of naming it alone.
+    let question = "if I rename a ticket, will old links to it break?";
+    match reading(&graph, question)?.data {
+        ResolveOutcome::Ambiguous { candidates } => {
+            let ids: Vec<&str> = candidates.iter().map(|c| c.decision_id.as_str()).collect();
+            assert_eq!(ids, vec!["d:shop", "d:slugs"]);
+            assert!(candidates[0].missing_terms.is_empty());
+            assert_eq!(candidates[1].missing_terms, vec!["rename", "break"]);
+        }
+        other => panic!("a decision with one word in its headline is listed: {other:?}"),
+    }
+    // A verb that writes keeps the rule of the only decision that holds every word: it is the
+    // one picked (hivemind-293q).
+    match resolve_decision_by_description(&graph, question, None)?.data {
+        ResolveOutcome::Resolved { candidate } => assert_eq!(candidate.decision_id, "d:shop"),
+        other => panic!("a writer picks the only decision that holds every word: {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn the_only_full_match_the_question_names_outright_is_answered_whatever_its_headline() -> Result<()>
+{
+    let graph = rename_graph()?;
+
+    // Asking a decision's title back names it, so there is nothing to weigh.
+    let title = "The shop is renamed to Orchard; the tool keeps its name";
+    match reading(&graph, title)?.data {
+        ResolveOutcome::Resolved { candidate } => assert_eq!(candidate.decision_id, "d:shop"),
+        other => panic!("a decision's own title names it: {other:?}"),
     }
     Ok(())
 }

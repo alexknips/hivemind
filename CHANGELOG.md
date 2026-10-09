@@ -655,6 +655,41 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   same decision, since two of its three words are in that decision's headline. MCP tool
   descriptions for `chain`, `why`, `compact_view` and `verify` say so. (hivemind-5ctc)
 
+- **`why`, `verify`, `chain` and `compact-view` no longer name a decision alone for a short
+  question that the decision only holds in its rationale.** Two shapes of the same mistake were
+  left by the fix above. (1) "When was a decision accepted or superseded on the decision page?"
+  and "why does the decision page not show when a decision was superseded?" were still answered
+  with the decision about how a contested, superseded decision is noted: it says "superseded" in
+  its title and files "decision-page" under a topic key, two of the three words, which is more
+  than half, while the six to ten other decisions that hold all three words, the status
+  history among them, were not offered. When two or more of the other decisions that hold every
+  word say one of the words in their own title or topic keys, a leader of a three-word question
+  is now named alone only if all three words are in its title and topic keys; otherwise the full
+  matches come back as an `outcome: ambiguous` list, as before for longer questions. (2) "If I
+  rename a decision, will old links to it break?" and "does every acceptance or rejection get its
+  own line in a decision's history?" were answered with the one decision that holds every word,
+  the website rename that says "rename" in its title and the rest in its rationale, and a status
+  history decision that says "history" in its title and the other six words in its rationale,
+  while the decision the question is about lacked a word or two and was never offered. A
+  decision that alone holds every word and says fewer than two of the question's words in its
+  title and topic keys (in any form; all of them in a question of one or two words) is now
+  listed first, with the decisions that lack some of the words after it, each naming what it
+  lacks (`outcome: ambiguous`), when such decisions exist. With none to list it among, it is
+  answered with as before, and so is a decision the question names outright. A verb that writes
+  keeps its rule for the only decision that holds every word. Through the real binary on a copy
+  of today's ledger (534 events): the four questions above list the decision they are about among
+  the first three (the status history #3, #2 and #2, the decision links #3), and the
+  not / doesn't / plain forms of the question of hivemind-5ctc still list; the checker's 55 questions go
+  from 5 wrong one-call answers to 4 with the 32 right ones unchanged; the 34 of hivemind-eral,
+  14 hard, 41 hold-out, 32 fresh and 54 unrelated controls (none answered) are unchanged; of 20
+  fresh paraphrases of the same questions wrong one-call answers go 6 -> 3, and two right
+  one-call answers ("will a decision's link change if I retitle it?" and its slug sibling) are
+  now listed first instead of named; over 414 generated questions wrong one-call answers go
+  3 -> 1 and right ones 363 -> 362. Not fixed: a close candidate that leads on two generic
+  words of its title ("after a disputed decision is replaced, do we still show who pushed
+  back?") still names a decision about something else. MCP tool descriptions for `chain`, `why`,
+  `compact_view` and `verify` say so. (hivemind-jis8)
+
 - **A decision captured from a session that was classified days later says when it was said,
   not when the classifier ran.** A decision the classifier captured without naming a source
   turn was dated at the classification's own time, so `why` and `verify` showed a session said
