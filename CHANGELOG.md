@@ -446,6 +446,17 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A write that runs long is no longer answered "408 request timed out" after it has been
+  recorded.** The server cut every request off after 30 seconds, but a write's ledger work does
+  not stop when the answer is dropped: it ran on and committed. The client was told the write
+  failed when it was recorded, and a client that retried recorded it twice (on the city cell, one
+  `capture_decision` retried three times after a 408 left four copies of one decision). Only reads
+  (`GET`, `HEAD`, `OPTIONS`) are cut off at 30 seconds now; every `POST` runs to the end and
+  answers with what it did, however long that takes. That includes a read tool called through
+  `POST /mcp`, which has no time limit any more. A client should still treat a dropped
+  connection on a write as "outcome unknown" and look before it retries. An idempotency key,
+  so that a retry is recognised, is a separate design and is not part of this change.
+  (hivemind-s9cx)
 - **A decision nobody has decided yet no longer lists every option as rejected.** A decision
   captured with its options and no choice (an open question, or an MCP capture whose chosen
   option did not arrive) read as one that rejected everything: `why --summary` printed

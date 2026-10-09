@@ -72,8 +72,8 @@ serde_urlencoded = "0.7.1"
 serde_yaml = { version = "0.9", optional = true }
 sha2 = "0.10.9"
 thiserror = "2.0.17"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
-tower = { version = "0.5", features = ["util", "timeout", "limit"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
+tower = { version = "0.5", features = ["util", "limit"] }
 tower-http = { version = "0.6", features = ["cors", "fs"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }

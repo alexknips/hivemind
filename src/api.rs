@@ -92,17 +92,15 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use axum::error_handling::HandleErrorLayer;
-use axum::extract::{DefaultBodyLimit, Json};
+use axum::extract::{DefaultBodyLimit, Json, Request, State};
 use axum::http::{header, Method, StatusCode};
+use axum::middleware::{from_fn_with_state, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::Router;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tower::limit::GlobalConcurrencyLimitLayer;
-use tower::timeout::TimeoutLayer;
-use tower::ServiceBuilder;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::warn;
@@ -131,7 +129,9 @@ type MapCacheKey = (String, u64, u64);
 type MapCache = Arc<Mutex<HashMap<MapCacheKey, crate::map::MapResult>>>;
 type GraphCache = RwLock<HashMap<TenantId, (EventId, Arc<MemoryGraph>)>>;
 
-const REQUEST_TIMEOUT_SECS: u64 = 30;
+/// How long a read (GET, HEAD, OPTIONS) may run before the server answers 408. Writes have no
+/// such limit: see [`read_timeout_middleware`].
+const READ_TIMEOUT_SECS: u64 = 30;
 const MAX_CONCURRENT_REQUESTS: usize = 200;
 
 // ---------------------------------------------------------------------------
@@ -587,9 +587,15 @@ struct ApiRequestCtx {
 // ---------------------------------------------------------------------------
 
 pub fn create_router(config: &ApiConfig) -> Router {
+    create_router_with_read_timeout(config, Duration::from_secs(READ_TIMEOUT_SECS))
+}
+
+/// [`create_router`] with the read timeout set by the caller, so a test can meet it without
+/// waiting 30 seconds. The server itself always runs with [`READ_TIMEOUT_SECS`].
+pub fn create_router_with_read_timeout(config: &ApiConfig, read_timeout: Duration) -> Router {
     let state = AppState::from_config(config)
         .expect("failed to initialize API backend; check database URL");
-    build_router(state)
+    build_router(state, read_timeout)
 }
 
 fn build_cors_layer(origins: &[String]) -> Option<CorsLayer> {
@@ -607,7 +613,7 @@ fn build_cors_layer(origins: &[String]) -> Option<CorsLayer> {
     )
 }
 
-fn build_router(state: AppState) -> Router {
+fn build_router(state: AppState, read_timeout: Duration) -> Router {
     let cors = build_cors_layer(&state.cors_origins);
     let router = Router::new()
         .route("/v1/health", get(handlers::health_handler))
@@ -757,20 +763,35 @@ fn build_router(state: AppState) -> Router {
         router
     };
 
-    // HandleError (outermost) → Timeout (covers queue + processing) → ConcurrencyLimit (innermost).
-    // ServiceBuilder stacks outermost-first so HandleError catches Elapsed from inner layers.
-    router.layer(
-        ServiceBuilder::new()
-            .layer(HandleErrorLayer::new(|err: tower::BoxError| async move {
-                if err.is::<tower::timeout::error::Elapsed>() {
-                    (StatusCode::REQUEST_TIMEOUT, "request timed out")
-                } else {
-                    (StatusCode::SERVICE_UNAVAILABLE, "service unavailable")
-                }
-            }))
-            .layer(TimeoutLayer::new(Duration::from_secs(REQUEST_TIMEOUT_SECS)))
-            .layer(GlobalConcurrencyLimitLayer::new(MAX_CONCURRENT_REQUESTS)),
-    )
+    // Read timeout (outermost, covers queue + processing) → ConcurrencyLimit (innermost). Each
+    // `.layer` wraps the ones before it, so the timeout is added last.
+    router
+        .layer(GlobalConcurrencyLimitLayer::new(MAX_CONCURRENT_REQUESTS))
+        .layer(from_fn_with_state(read_timeout, read_timeout_middleware))
+}
+
+/// Cuts a read off with 408 after `timeout`; a write is never cut off.
+///
+/// A write handler hands its ledger work to `spawn_blocking`. Dropping the awaiting future at the
+/// deadline does not stop that task: it runs on and commits. A 408 on a write would tell the
+/// client "not recorded" about an event that is recorded, and a client that retries records it
+/// twice (hivemind-s9cx). So a write runs to the end and answers with what it did, however long
+/// that takes. A read has nothing to commit, so 408 is honest for it.
+///
+/// A request counts as a read when its method is safe (GET, HEAD, OPTIONS, TRACE). Every `POST`
+/// is a write, so a read tool called through `POST /mcp` is not cut off either.
+async fn read_timeout_middleware(
+    State(timeout): State<Duration>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !request.method().is_safe() {
+        return next.run(request).await;
+    }
+    match tokio::time::timeout(timeout, next.run(request)).await {
+        Ok(response) => response,
+        Err(_elapsed) => (StatusCode::REQUEST_TIMEOUT, "request timed out").into_response(),
+    }
 }
 
 /// Bind to `config.bind:config.port` and serve until SIGINT/SIGTERM.
@@ -811,7 +832,7 @@ pub async fn serve_http(state: AppState, config: &ApiConfig) -> crate::Result<()
     );
     slack::try_spawn_drain_loop(&state);
 
-    let app = build_router(state);
+    let app = build_router(state, Duration::from_secs(READ_TIMEOUT_SECS));
     let addr = SocketAddr::new(config.bind, config.port);
     let listener = tokio::net::TcpListener::bind(addr)
         .await

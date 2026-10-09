@@ -25,7 +25,8 @@ use super::cli_tenant;
 /// did with it.
 type BatchSink = dyn FnMut(Vec<ReplayEvent>, bool) -> Result<ReplayCounts>;
 
-/// A cell takes up to 30 s per request; the client waits a little longer than a slow batch needs.
+/// A cell does not cut a write off, so a slow batch answers when it is done; the client waits a
+/// little longer than a slow batch needs.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub(super) fn run_migrate(cli: &Cli, args: &MigrateArgs) -> Result<String> {
