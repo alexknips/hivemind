@@ -10,14 +10,18 @@
 //!   premises on has been refuted (a failed bet included), or a prior decision it follows from
 //!   has been superseded or rejected.
 //! - `contested`: the decision has both accepting and rejecting actors, unresolved.
+//! - `rejected`: the decision has rejecting actors and no accepting one. Its own status reads
+//!   `rejected`, so it does not hold: the reason names who rejected it, the way a decision resting
+//!   on it reads `premise_rejected`.
 //! - `conflicting_answer`: another accepted, non-superseded decision answers the same question
 //!   with a different chosen option (hivemind-zdsh.16). Reported on both, never resolved. It does
 //!   not flip `held_up`: neither answer has been shown wrong, and the same question can
 //!   legitimately be answered differently in different projects — it is attention, like an
 //!   overdue bet, so a reader sees the disagreement without either side being marked stale.
 //!
-//! `held_up` is true when superseded, stale_premises and contested are all absent. An overdue
-//! bet and a conflicting answer do not flip it: both are reported as attention, not staleness.
+//! `held_up` is true when superseded, stale_premises, contested and rejected are all absent. An
+//! overdue bet and a conflicting answer do not flip it: both are reported as attention, not
+//! staleness.
 //!
 //! This is the "did it hold up" view and nothing else. How well a decision was made (options
 //! weighed, what it rests on) is quality, which the seven-dimension profile reports; it is not a
@@ -28,14 +32,14 @@ use std::time::Instant;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::projector::{GraphParams, GraphValue, GraphView};
+use crate::projector::{GraphParams, GraphValue, GraphView, NodeKind, RelationKind};
 use crate::Result;
 
 use super::grounding::{premise_signals, StalePremise, UncheckedBet};
 use super::project_label::ProjectLabels;
 use super::question::conflicting_answer_ids;
 use super::shared::{
-    optional_int, optional_string, query_error, query_superseder, query_timer_start,
+    neighbor_ids, optional_int, optional_string, query_error, query_superseder, query_timer_start,
     required_string, MAX_QUERY_RESULTS,
 };
 use super::QueryResponse;
@@ -64,6 +68,9 @@ pub enum OutcomeReason {
     PremiseRejected { decision_id: String },
     /// The decision is actively contested: at least one actor accepted it and at least one rejected it.
     Contested,
+    /// At least one actor rejected the decision and nobody accepted it. `by` lists the rejecting
+    /// actors, sorted by id.
+    Rejected { by: Vec<String> },
     /// Another accepted, non-superseded decision answers the same question with a different
     /// chosen option. Present on both decisions; the disagreement is surfaced, never resolved.
     ConflictingAnswer { other_id: String },
@@ -72,8 +79,8 @@ pub enum OutcomeReason {
 /// Derived outcome record for a single decision.
 ///
 /// `reasons` is empty when the decision is clean (no negative signals).
-/// `held_up` is false when the decision is superseded, has stale premises, or is contested.
-/// An overdue bet does NOT set `held_up = false`.
+/// `held_up` is false when the decision is superseded, has stale premises, is contested, or was
+/// rejected and never accepted. An overdue bet does NOT set `held_up = false`.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct DecisionOutcome {
     pub decision_id: String,
@@ -81,7 +88,7 @@ pub struct DecisionOutcome {
     pub project: Option<String>,
     /// What a person calls that project (see `DecisionView::project_label`).
     pub project_label: String,
-    /// False when superseded, stale (a premise no longer stands), or contested.
+    /// False when superseded, stale (a premise no longer stands), contested, or rejected.
     pub held_up: bool,
     pub superseded: bool,
     pub superseded_by: Option<String>,
@@ -93,6 +100,8 @@ pub struct DecisionOutcome {
     pub stale_premises: bool,
     pub refuted_hypothesis_ids: Vec<String>,
     pub contested: bool,
+    /// Someone rejected it and nobody accepted it (a contested decision is not this one).
+    pub rejected: bool,
     /// Bets whose check date has passed with no evidence either way. Attention, not
     /// staleness: `held_up` is unaffected.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -308,10 +317,23 @@ fn derive_outcome(
         })
         .collect();
 
-    // --- Signal 3: contested ---
-    let contested = query_contested(graph, decision_id)?;
+    // --- Signal 3: contested, or rejected with nobody accepting it ---
+    let positions = query_review_positions(graph, decision_id)?;
+    let contested = positions.accepted > 0 && positions.rejected > 0;
     if contested {
         reasons.push(OutcomeReason::Contested);
+    }
+    let rejected = positions.accepted == 0 && positions.rejected > 0;
+    if rejected {
+        reasons.push(OutcomeReason::Rejected {
+            by: neighbor_ids(
+                graph,
+                decision_id,
+                RelationKind::RejectedBy,
+                NodeKind::Actor,
+                "actor_id",
+            )?,
+        });
     }
 
     // --- Signal: conflicting answers to one question. Attention, not staleness: `held_up`
@@ -320,7 +342,7 @@ fn derive_outcome(
         reasons.push(OutcomeReason::ConflictingAnswer { other_id });
     }
 
-    let held_up = !superseded && !stale_premises && !contested;
+    let held_up = !superseded && !stale_premises && !contested && !rejected;
 
     Ok(DecisionOutcome {
         decision_id: decision_id.to_owned(),
@@ -333,6 +355,7 @@ fn derive_outcome(
         stale_premises,
         refuted_hypothesis_ids,
         contested,
+        rejected,
         unchecked: signals.unchecked,
         reasons,
     })
@@ -362,8 +385,13 @@ fn query_refuted_premises(graph: &impl GraphView, decision_id: &str) -> Result<V
     Ok(ids)
 }
 
-/// True when the decision has both accepting and rejecting actors simultaneously.
-fn query_contested(graph: &impl GraphView, decision_id: &str) -> Result<bool> {
+/// How many actors accepted and how many rejected a decision.
+struct ReviewPositions {
+    accepted: i64,
+    rejected: i64,
+}
+
+fn query_review_positions(graph: &impl GraphView, decision_id: &str) -> Result<ReviewPositions> {
     let rows = graph.query(
         "MATCH (d:`Decision` {id: $id}) \
          RETURN \
@@ -371,13 +399,16 @@ fn query_contested(graph: &impl GraphView, decision_id: &str) -> Result<bool> {
            COUNT { MATCH (d)-[:`REJECTED_BY`]->() } AS rejected_count;",
         &GraphParams::from([("id".to_owned(), GraphValue::String(decision_id.to_owned()))]),
     )?;
-    if let Some(row) = rows.first() {
-        let accepted = optional_int(row, "accepted_count").unwrap_or(0);
-        let rejected = optional_int(row, "rejected_count").unwrap_or(0);
-        Ok(accepted > 0 && rejected > 0)
-    } else {
-        Ok(false)
-    }
+    Ok(rows.first().map_or(
+        ReviewPositions {
+            accepted: 0,
+            rejected: 0,
+        },
+        |row| ReviewPositions {
+            accepted: optional_int(row, "accepted_count").unwrap_or(0),
+            rejected: optional_int(row, "rejected_count").unwrap_or(0),
+        },
+    ))
 }
 
 // ---------------------------------------------------------------------------

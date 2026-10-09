@@ -502,6 +502,8 @@ impl GraphView for MemoryGraph {
                 "evidence_id"
             } else if cypher.contains("AS hypothesis_id") {
                 "hypothesis_id"
+            } else if cypher.contains("AS actor_id") {
+                "actor_id"
             } else {
                 return Err(
                     memory_error(format!("unknown neighbor alias in query: {cypher}")).into(),

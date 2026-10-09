@@ -53,6 +53,7 @@ The launch window is available but quality and caveat evidence are still unresol
 Still holds: **no**
 Reasons:
 - Premised on refuted hypothesis org:launch:hypothesis:launch-ready
+- Rejected by human:legal and accepted by no one
 
 Supersedes: None recorded.
 Superseded by: None recorded.

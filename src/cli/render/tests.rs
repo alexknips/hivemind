@@ -276,6 +276,30 @@ fn brief_reports_an_overdue_bet_as_unchecked_while_it_still_holds() -> Result<()
 }
 
 #[test]
+fn brief_says_a_rejected_decision_nobody_accepted_does_not_hold_and_who_rejected_it() -> Result<()>
+{
+    let scenario = Scenario::new();
+    scenario.decision(
+        "d:mail",
+        "Checker report goes to the mayor by mail",
+        "human:alice",
+        "2026-01-01T00:00:00Z",
+    )?;
+    scenario.reject("d:mail", "human:carol", "2026-01-01T00:00:01Z")?;
+
+    let text = brief_text(&scenario.graph()?, "d:mail")?;
+
+    assert!(text.contains("[rejected]"), "{text}");
+    assert!(text.contains("  still holds: NO: rejected\n"), "{text}");
+    assert!(
+        text.contains("    - rejected by human:carol and accepted by no one\n"),
+        "{text}"
+    );
+    assert!(!text.contains("still holds: yes"), "{text}");
+    Ok(())
+}
+
+#[test]
 fn situational_summary_names_why_a_decision_is_stale() -> Result<()> {
     let scenario = grounded_scenario()?;
     scenario.decision(

@@ -51,6 +51,7 @@ Budget timing is tight and headcount can wait if scope shrinks.
 Still holds: **no**
 Reasons:
 - Premised on refuted hypothesis org:capacity:hypothesis:contractor-covers-gap
+- Rejected by agent:team-lead and accepted by no one
 
 Supersedes: None recorded.
 Superseded by: None recorded.

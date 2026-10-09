@@ -793,7 +793,7 @@ separate query functions:
   scope an agent's self-acceptance fell within; absent when the agent decided
   alone — hivemind-zdsh.6) — this is "who decided."
 - `get_decision_outcome` (`outcome.rs:94`) → `DecisionOutcome`: `held_up`
-  plus structured `reasons` (superseded / stale premises / contested) — this is
+  plus structured `reasons` (superseded / stale premises / contested / rejected) — this is
   "STILL-HOLDS." How the decision was made (options weighed, what it rests on)
   is quality, not outcome: `score_decision` reports it.
 
@@ -861,6 +861,13 @@ the accepted answers recorded after a matched decision as `newer_answers` (text:
 `answers_to(question_id | text)` lists every answer to one question in event
 order.
 
+**Rejected and never accepted** (hivemind-wvlz). A decision someone rejected and
+nobody accepted has status `rejected`, so it does not hold: `held_up` is `false`
+and `still_holds.reasons` carries `{"kind": "rejected", "by": [<actor ids>]}`,
+the same answer a decision resting on it already gave (`PremiseRejected`). A
+decision with both accepting and rejecting actors stays `contested` with no
+`rejected` reason.
+
 **What it rests on** (hivemind-zdsh.15 §5, hivemind-gwhr.3). `rests_on` answers
 "what does this decision rest on?" from the graph: a prior decision
 (`FOLLOWS_FROM`), an observation (`BASED_ON`), an assumption or a declared bet
@@ -879,7 +886,7 @@ classifier extraction, document import, raw `emit decision.proposed`) and is sho
 as "rests on: nothing declared" (a premise link, evidence, an assumption or a
 declared bet all count as declared). It is not a reason the decision stopped
 holding: `still_holds.reasons` lists only what happened to it (superseded, a stale
-premise, contested), and how well it was made is the quality profile's
+premise, contested, rejected), and how well it was made is the quality profile's
 (`score_decision`). Text renderers show labels and keep ids in the JSON.
 
 Every fluent verb's output, on success, leads with a `DecisionBrief` (or a

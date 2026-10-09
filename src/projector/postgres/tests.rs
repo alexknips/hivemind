@@ -693,6 +693,7 @@ fn get_decision_outcome_matches_memory() -> Result<()> {
             "decision:stale-option",
             "decision:contested",
             "decision:thin",
+            "decision:rejected",
         ] {
             let memory_result = get_decision_outcome(&memory, decision_id)?.data;
             let pg_result = get_decision_outcome(pg, decision_id)?.data;
@@ -777,6 +778,7 @@ fn get_decision_context_matches_memory() -> Result<()> {
             "decision:stale-option",
             "decision:contested",
             "decision:thin",
+            "decision:rejected",
         ] {
             let memory_result = get_decision_context(&memory, decision_id)?.data;
             let pg_result = get_decision_context(pg, decision_id)?.data;
@@ -1825,7 +1827,7 @@ fn situational_fixture_ledger() -> Result<InMemoryEventLedger> {
 }
 
 /// Exercises every get_decision_outcome signal (superseded, stale_premises via both
-/// PREMISED_ON_DIRECT and CHOSE->PREMISED_ON, contested) plus a clean decision and a bare one
+/// PREMISED_ON_DIRECT and CHOSE->PREMISED_ON, contested, rejected) plus a clean decision and a bare one
 /// (no options, nothing it rests on: not a signal), so the outcome-parity tests can diff backend
 /// behavior signal-by-signal.
 fn outcome_fixture_ledger() -> Result<InMemoryEventLedger> {
@@ -2012,6 +2014,30 @@ fn outcome_fixture_ledger() -> Result<InMemoryEventLedger> {
                 "hypothesis_ids": [],
                 "evidence_ids": []
             }),
+        ),
+        make_event(
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:rejected",
+                "title": "Rejected decision",
+                "rationale": "Bob and carol turned it down; nobody accepted it",
+                "topic_keys": ["infra"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+        ),
+        make_event(
+            EventType::DecisionRejected,
+            "actor:carol",
+            json!({"decision_id": "decision:rejected"}),
+        ),
+        make_event(
+            EventType::DecisionRejected,
+            "actor:bob",
+            json!({"decision_id": "decision:rejected"}),
         ),
     ] {
         ledger.append(event)?;

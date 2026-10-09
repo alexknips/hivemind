@@ -253,7 +253,7 @@ fn dispatch_query(
         return query_neighbor_pairs(client, tenant_id, cypher, params);
     }
 
-    // ── Neighbor ids (alias: option_id / evidence_id / hypothesis_id) ────────
+    // ── Neighbor ids (alias: option_id / evidence_id / hypothesis_id / actor_id) ─
     if cypher.contains("RETURN n.id AS") {
         return query_neighbor_ids(client, tenant_id, cypher, params);
     }
@@ -627,6 +627,8 @@ fn query_neighbor_ids(
         "evidence_id"
     } else if cypher.contains("AS hypothesis_id") {
         "hypothesis_id"
+    } else if cypher.contains("AS actor_id") {
+        "actor_id"
     } else {
         return Err(projection_error(format!("unknown neighbor alias in: {cypher}")).into());
     };

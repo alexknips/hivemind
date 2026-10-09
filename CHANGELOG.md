@@ -446,6 +446,14 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A decision someone rejected and nobody accepted no longer reads "still holds: yes".**
+  `why`, `verify`, `GET /v1/decisions/verify` and `get_decision_outcome` answered `[rejected]`
+  with `held_up: true` and no reason, while a decision resting on it read "premise rejected".
+  The rejected decision now reads `held_up: false` with a `rejected` reason that names who
+  rejected it (`{"kind": "rejected", "by": ["human:carol"]}`; text: "still holds: NO: rejected").
+  A contested decision (accepted and rejected) and an accepted one read as before. The
+  failure-attribution corpus counts these decisions as not holding and its `signal_breakdown`
+  gains `rejected_count`; the bulk `get_decision_quality_candidates` outcome gains `rejected`.
 - **A write that runs long is no longer answered "408 request timed out" after it has been
   recorded.** The server cut every request off after 30 seconds, but a write's ledger work does
   not stop when the answer is dropped: it ran on and committed. The client was told the write

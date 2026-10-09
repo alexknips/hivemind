@@ -481,3 +481,152 @@ fn brief_says_nothing_about_a_record_that_reads_as_recorded() -> Result<()> {
     );
     Ok(())
 }
+
+fn bare_decision(sequence: u128, decision_id: &str, title: &str) -> Event {
+    event(
+        sequence,
+        EventType::DecisionProposed,
+        "human:alice",
+        json!({
+            "decision_id": decision_id,
+            "title": title,
+            "rationale": "Proposed for review",
+            "topic_keys": [],
+            "option_ids": [],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    )
+}
+
+#[test]
+fn brief_says_a_decision_nobody_accepted_and_someone_rejected_does_not_hold() -> Result<()> {
+    let graph = graph_from_events([
+        bare_decision(1, "d:rejected", "Mail the report"),
+        event(
+            2,
+            EventType::DecisionRejected,
+            "human:carol",
+            json!({ "decision_id": "d:rejected" }),
+        ),
+        event(
+            3,
+            EventType::DecisionRejected,
+            "human:bob",
+            json!({ "decision_id": "d:rejected" }),
+        ),
+    ])?;
+
+    let brief = get_decision_brief(&graph, "d:rejected")?
+        .data
+        .expect("decision exists");
+
+    assert_eq!(brief.status, DecisionStatus::Rejected);
+    assert!(!brief.still_holds.held_up);
+    // The reason says it was rejected and by whom, sorted by actor id.
+    assert_eq!(
+        brief.still_holds.reasons,
+        vec![OutcomeReason::Rejected {
+            by: vec!["human:bob".to_owned(), "human:carol".to_owned()]
+        }]
+    );
+    let wire = serde_json::to_value(&brief.still_holds).expect("still_holds serializes");
+    assert_eq!(wire["held_up"], false);
+    assert_eq!(wire["reasons"][0]["kind"], "rejected");
+    assert_eq!(
+        wire["reasons"][0]["by"],
+        json!(["human:bob", "human:carol"])
+    );
+    Ok(())
+}
+
+#[test]
+fn brief_keeps_a_contested_decision_contested_and_an_accepted_one_holding() -> Result<()> {
+    let graph = graph_from_events([
+        bare_decision(1, "d:contested", "Mail the report"),
+        event(
+            2,
+            EventType::DecisionAccepted,
+            "human:bob",
+            json!({ "decision_id": "d:contested" }),
+        ),
+        event(
+            3,
+            EventType::DecisionRejected,
+            "human:carol",
+            json!({ "decision_id": "d:contested" }),
+        ),
+        bare_decision(4, "d:accepted", "Post it in Slack"),
+        event(
+            5,
+            EventType::DecisionAccepted,
+            "human:bob",
+            json!({ "decision_id": "d:accepted" }),
+        ),
+    ])?;
+
+    let contested = get_decision_brief(&graph, "d:contested")?
+        .data
+        .expect("decision exists");
+    // Contested stays its own reason: someone accepted it, so it is a disagreement, not a rejection.
+    assert!(!contested.still_holds.held_up);
+    assert_eq!(
+        contested.still_holds.reasons,
+        vec![OutcomeReason::Contested]
+    );
+
+    let accepted = get_decision_brief(&graph, "d:accepted")?
+        .data
+        .expect("decision exists");
+    assert!(accepted.still_holds.held_up);
+    assert!(accepted.still_holds.reasons.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_rejected_decision_and_the_decision_resting_on_it_both_read_as_not_holding() -> Result<()> {
+    let graph = graph_from_events([
+        bare_decision(1, "d:mail", "Mail the report"),
+        bare_decision(2, "d:subject", "Fixed subject line"),
+        event(
+            3,
+            EventType::RelationAdded,
+            "human:alice",
+            json!({
+                "relation": "FOLLOWS_FROM",
+                "from_id": "d:subject",
+                "to_id": "d:mail"
+            }),
+        ),
+        event(
+            4,
+            EventType::DecisionAccepted,
+            "human:alice",
+            json!({ "decision_id": "d:subject" }),
+        ),
+        event(
+            5,
+            EventType::DecisionRejected,
+            "human:carol",
+            json!({ "decision_id": "d:mail" }),
+        ),
+    ])?;
+
+    let premise = get_decision_brief(&graph, "d:mail")?
+        .data
+        .expect("decision exists");
+    let dependent = get_decision_brief(&graph, "d:subject")?
+        .data
+        .expect("decision exists");
+
+    assert!(!premise.still_holds.held_up);
+    assert!(!dependent.still_holds.held_up);
+    assert_eq!(
+        dependent.still_holds.reasons,
+        vec![OutcomeReason::PremiseRejected {
+            decision_id: "d:mail".to_owned()
+        }]
+    );
+    Ok(())
+}

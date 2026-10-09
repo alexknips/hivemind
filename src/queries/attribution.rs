@@ -20,7 +20,7 @@
 //!   Never per-person rankings. Individuals appear only in their own self-view.
 //! - Effect sizes are failure-rate deltas vs the corpus baseline.
 //! - Confidence is honest: groups with n < 10 are flagged as LOW confidence.
-//! - "Failure" = `held_up == false` (superseded OR stale premises OR contested). How a decision
+//! - "Failure" = `held_up == false` (superseded OR stale premises OR contested OR rejected). How a decision
 //!   was made is never part of that definition: it is a condition to group failures by, never
 //!   a failure.
 
@@ -54,7 +54,7 @@ const MEDIUM_CONFIDENCE_THRESHOLD: usize = 30;
 pub struct CorpusStats {
     /// Total decisions analysed.
     pub total_decisions: usize,
-    /// Decisions where `held_up == false` (superseded, stale, or contested).
+    /// Decisions where `held_up == false` (superseded, stale, contested, or rejected).
     pub failed_decisions: usize,
     /// `failed_decisions / total_decisions` or 0.0 when total = 0.
     pub baseline_failure_rate: f64,
@@ -68,6 +68,7 @@ pub struct SignalBreakdown {
     pub superseded_count: usize,
     pub stale_premises_count: usize,
     pub contested_count: usize,
+    pub rejected_count: usize,
 }
 
 /// One named condition a decision was in that this analysis does not read from the graph: the
@@ -254,6 +255,7 @@ pub fn get_failure_attribution_with(
         superseded_count: pairs.iter().filter(|(o, _)| o.superseded).count(),
         stale_premises_count: pairs.iter().filter(|(o, _)| o.stale_premises).count(),
         contested_count: pairs.iter().filter(|(o, _)| o.contested).count(),
+        rejected_count: pairs.iter().filter(|(o, _)| o.rejected).count(),
     };
 
     let corpus_stats = CorpusStats {

@@ -952,7 +952,7 @@ fn write_decided_by(output: &mut String, decided_by: &DecidedBy) {
 
 /// The short reasons a decision no longer holds, in the order they were derived and without
 /// repeats: `superseded`, `premise superseded`, `premise rejected`, `assumption refuted`,
-/// `contested`.
+/// `contested`, `rejected`.
 fn still_holds_labels(reasons: &[OutcomeReason]) -> Vec<&'static str> {
     let mut labels: Vec<&'static str> = Vec::new();
     for reason in reasons {
@@ -962,6 +962,7 @@ fn still_holds_labels(reasons: &[OutcomeReason]) -> Vec<&'static str> {
             OutcomeReason::PremiseSuperseded { .. } => "premise superseded",
             OutcomeReason::PremiseRejected { .. } => "premise rejected",
             OutcomeReason::Contested => "contested",
+            OutcomeReason::Rejected { .. } => "rejected",
             // A disagreement to resolve, not a reason this decision stopped holding.
             OutcomeReason::ConflictingAnswer { .. } => continue,
         };
@@ -1030,6 +1031,9 @@ fn format_outcome_reason(
             format!("follows from {}, which was rejected", named(decision_id))
         }
         OutcomeReason::Contested => "contested: accepted and rejected actors disagree".to_owned(),
+        OutcomeReason::Rejected { by } => {
+            format!("rejected by {} and accepted by no one", by.join(", "))
+        }
         OutcomeReason::ConflictingAnswer { other_id } => {
             let other = other_answers
                 .iter()

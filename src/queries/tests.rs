@@ -4128,7 +4128,8 @@ fn failure_attribution_no_longer_counts_thin_structure() -> Result<()> {
         BTreeSet::from([
             "superseded_count",
             "stale_premises_count",
-            "contested_count"
+            "contested_count",
+            "rejected_count"
         ])
     );
     Ok(())
