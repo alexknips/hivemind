@@ -458,6 +458,14 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A rationale that quotes a full decision id is no longer refused as a "bare list item"
+  about one time in five.** The capture check for a reference into a chat list (`1a`, `2. a`)
+  read a four-digit uuid group of three digits and a letter, such as the `612a` in
+  `decision-0d40fa67-612a-4f3b-8c1d-0123456789ab`, as a citation, so quoting an earlier
+  decision's full id (which the capture guidance says to link) was refused or accepted
+  depending on the uuid, not the text. A full id (`decision-`, `evidence-`, `hypothesis-` or a
+  bare uuid) is now skipped whole; `1a`, `2c` and `2. a` beside it are still refused unless
+  `quote` and `question` carry the verbatim words. (hivemind-kra19)
 - **A decision someone rejected and nobody accepted no longer reads "still holds: yes".**
   `why`, `verify`, `GET /v1/decisions/verify` and `get_decision_outcome` answered `[rejected]`
   with `held_up: true` and no reason, while a decision resting on it read "premise rejected".

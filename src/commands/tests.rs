@@ -659,6 +659,113 @@ fn bare_list_reference_still_finds_the_citation_shapes_beside_figures() {
 }
 
 #[test]
+fn bare_list_reference_skips_the_groups_of_a_full_id() {
+    // hivemind-kra19: a uuid group of three digits and one letter (`612a`) is bounded by `-` on
+    // both sides, so a full id in a rationale was refused as a citation, about one id in five.
+    for id in [
+        "decision-0d40fa67-612a-4f3b-8c1d-0123456789ab",
+        "decision-0d40fa67-4f3b-612a-8c1d-0123456789ab",
+        "decision-0d40fa67-4f3b-8c1d-612a-0123456789ab",
+        "evidence-9f3e51c2-123b-999e-100c-aaaaaaaaaaaa",
+        "hypothesis-1a2b3c4d-777f-1e11-2c22-123456789012",
+        "612a4f90-612a-612a-612a-612a4f90c0de",
+        "DECISION-0D40FA67-612A-4F3B-8C1D-0123456789AB",
+    ] {
+        for rationale in [
+            format!("This carries on from {id} unchanged"),
+            format!("This carries on from {id}, unchanged"),
+            format!("This carries on from ({id}). It is unchanged"),
+            format!("This carries on from {id}"),
+            id.to_owned(),
+        ] {
+            assert_eq!(
+                find_bare_list_reference(&rationale),
+                None,
+                "a full id is not a list citation: {rationale}"
+            );
+        }
+    }
+
+    // Every group a v4 uuid can hold in one of its four-digit slots: up to three digits, then
+    // one hex letter that is not a unit suffix.
+    for number in 0..1000 {
+        for letter in ['a', 'b', 'c', 'e', 'f'] {
+            let group = format!("{number:03}{letter}");
+            for id in [
+                format!("decision-0d40fa67-{group}-4f3b-8c1d-0123456789ab"),
+                format!("decision-0d40fa67-4f3b-{group}-8c1d-0123456789ab"),
+                format!("decision-0d40fa67-4f3b-8c1d-{group}-0123456789ab"),
+            ] {
+                assert_eq!(
+                    find_bare_list_reference(&format!("Follows from {id} directly")),
+                    None,
+                    "the group {group} of a full id is not a list citation: {id}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn bare_list_reference_still_finds_a_citation_beside_a_full_id() {
+    let id = "decision-0d40fa67-612a-4f3b-8c1d-0123456789ab";
+    assert_eq!(
+        find_bare_list_reference(&format!("Per {id}, verbatim 1b was the pick")),
+        Some("1b".to_owned())
+    );
+    assert_eq!(
+        find_bare_list_reference(&format!("Option 2C of {id} was the one we kept")),
+        Some("2C".to_owned())
+    );
+    assert_eq!(
+        find_bare_list_reference(&format!("From {id} and 2. a clearer alternative won")),
+        Some("2. a".to_owned())
+    );
+    // The same group outside an id is still a citation: only a whole, standalone id is skipped.
+    assert_eq!(
+        find_bare_list_reference("Took 612a from the list"),
+        Some("612a".to_owned())
+    );
+    assert_eq!(
+        find_bare_list_reference("Per the list, 12a was the pick"),
+        Some("12a".to_owned())
+    );
+}
+
+#[test]
+fn propose_decision_accepts_a_rationale_quoting_a_full_decision_id() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+    let rationale =
+        "This carries on from decision-0d40fa67-612a-4f3b-8c1d-0123456789ab and keeps its scope";
+
+    commands
+        .propose_decision(DecisionProposalInput {
+            project: None,
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
+            actor_id: "actor:alice",
+            title: "Decision that quotes an earlier decision's full id",
+            rationale,
+            topic_keys: &["topic".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &["A".to_owned()],
+            chosen_option_id: None,
+            decided_by: None,
+            delegated_by: None,
+            still_proposed: false,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+        })
+        .expect("a full decision id in the rationale is not a bare list item");
+}
+
+#[test]
 fn propose_decision_allows_a_list_shaped_rationale_when_quote_and_question_are_given() {
     let ledger = InMemoryEventLedger::new();
     let commands = Commands::new(&ledger);

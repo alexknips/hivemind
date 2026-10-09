@@ -4105,10 +4105,46 @@ fn require_readable_rationale(rationale: &str, has_quote_pair: bool) -> Result<(
 /// (see [`is_figure_unit_suffix`]). A regex-class heuristic, not a parser — some legitimate
 /// prose (e.g. a sentence that both ends in "N." and is immediately followed by a one-letter
 /// word) can still trip it; the `quote`/`question` pair is the escape hatch for a rationale
-/// that legitimately needs to carry one of these tokens.
+/// that legitimately needs to carry one of these tokens. A full id such as
+/// `decision-0d40fa67-612a-4f3b-8c1d-0123456789ab` is skipped whole: three of its uuid groups
+/// are four hex digits, and a group like `612a` is a digit run and one letter that is not a
+/// citation (hivemind-kra19).
 fn find_bare_list_reference(text: &str) -> Option<String> {
     fn is_word_char(c: char) -> bool {
         c.is_alphanumeric() || c == '_'
+    }
+
+    /// Digits in each group of a hyphenated uuid, as `Uuid::new_v4().to_string()` writes it.
+    const UUID_GROUP_DIGITS: [usize; 5] = [8, 4, 4, 4, 12];
+
+    /// Where the hyphenated uuid starting at `start` ends, when one does: five hex groups joined
+    /// by `-`, standing alone. A longer run of letters or digits is a word, not an id.
+    fn hyphenated_uuid_end(chars: &[char], start: usize) -> Option<usize> {
+        let preceded_by_word = start
+            .checked_sub(1)
+            .and_then(|previous| chars.get(previous))
+            .is_some_and(|c| is_word_char(*c));
+        if preceded_by_word {
+            return None;
+        }
+        let mut cursor = start;
+        for (index, group) in UUID_GROUP_DIGITS.into_iter().enumerate() {
+            if index > 0 {
+                if chars.get(cursor) != Some(&'-') {
+                    return None;
+                }
+                cursor += 1;
+            }
+            let digits = chars.get(cursor..cursor + group)?;
+            if !digits.iter().all(char::is_ascii_hexdigit) {
+                return None;
+            }
+            cursor += group;
+        }
+        if chars.get(cursor).is_some_and(|c| is_word_char(*c)) {
+            return None;
+        }
+        Some(cursor)
     }
 
     /// The letters that follow a digit run in a quantity rather than a list citation: thousand
@@ -4127,6 +4163,10 @@ fn find_bare_list_reference(text: &str) -> Option<String> {
     let len = chars.len();
     let mut i = 0;
     while i < len {
+        if let Some(end) = hyphenated_uuid_end(&chars, i) {
+            i = end;
+            continue;
+        }
         if !chars[i].is_ascii_digit() {
             i += 1;
             continue;
