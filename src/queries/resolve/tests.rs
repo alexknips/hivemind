@@ -2101,3 +2101,122 @@ fn a_topic_hint_that_leaves_one_full_match_lets_a_writer_through() -> Result<()>
     }
     Ok(())
 }
+
+// A close candidate that out-weighs the decisions holding every word (it is promoted) is not the
+// decision asked about because it does: with two generic words of the question in its headline and
+// the word the question is about only in the rationale of the full match, the full match is listed
+// with it (hivemind-vecg4).
+
+/// "does the report show export dates": the full match says "report" in its title and the other
+/// three words in its rationale; the close candidates say "report" and "export" in their titles
+/// and lack "show" and "dates".
+fn report_dates_graph() -> Result<MemoryGraph> {
+    graph_from_events([
+        decision_proposed_because(
+            1,
+            "d:full",
+            "Report layout",
+            "We show export dates on each row.",
+            &[],
+        ),
+        decision_proposed(2, "d:formats", "Report export formats", &[]),
+        decision_proposed(3, "d:schedule", "Report export schedule", &[]),
+        decision_proposed(4, "d:retention", "Report export retention", &[]),
+        decision_proposed(5, "d:limits", "Report export limits", &[]),
+        decision_proposed(6, "d:queue", "Adopt async queue for billing", &["billing"]),
+    ])
+}
+
+#[test]
+fn a_promoted_close_candidate_with_two_of_four_words_in_its_headline_is_listed_not_answered(
+) -> Result<()> {
+    let graph = report_dates_graph()?;
+
+    match reading(&graph, "does the report show export dates")?.data {
+        ResolveOutcome::Ambiguous { candidates } => {
+            assert!(candidates.iter().any(|c| c.decision_id == "d:full"));
+        }
+        other => panic!("two of four words in the headline name nothing alone, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_promoted_close_candidate_with_three_of_four_words_in_its_headline_is_still_answered(
+) -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed_because(
+            1,
+            "d:full",
+            "Report layout",
+            "We show export dates on each row.",
+            &[],
+        ),
+        // Lacks "show" only, and says the other three in its title.
+        decision_proposed(2, "d:dates", "Report export dates", &[]),
+        decision_proposed(3, "d:queue", "Adopt async queue for billing", &["billing"]),
+    ])?;
+
+    match reading(&graph, "does the report show export dates")?.data {
+        ResolveOutcome::Resolved { candidate } => {
+            assert_eq!(candidate.decision_id, "d:dates");
+            assert_eq!(candidate.missing_terms, vec!["show"]);
+        }
+        other => panic!("three of four words in the headline still answer, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_list_shows_at_most_two_promoted_close_candidates_before_the_first_full_match() -> Result<()> {
+    let graph = report_dates_graph()?;
+
+    match reading(&graph, "does the report show export dates")?.data {
+        ResolveOutcome::Ambiguous { candidates } => {
+            assert!(candidates.len() >= 5, "got {candidates:?}");
+            assert!(candidates[0].is_close() && candidates[1].is_close());
+            assert_eq!(candidates[2].decision_id, "d:full");
+            assert!(candidates[3..].iter().all(|c| c.is_close()));
+        }
+        other => panic!("expected a list, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_promoted_close_candidate_with_two_of_three_words_is_listed_among_two_full_matches_on_its_subject(
+) -> Result<()> {
+    // Two of three words are a lead over one full match (the product name above) and not over
+    // two that say a word of the question in their own title, as for a full match (hivemind-jis8).
+    let graph = graph_from_events([
+        decision_proposed_because(
+            1,
+            "d:deck",
+            "Product deck layout",
+            "The product is called Upheld on the first slide.",
+            &[],
+        ),
+        decision_proposed_because(
+            2,
+            "d:site",
+            "Product site copy",
+            "The site says the product is called Upheld.",
+            &[],
+        ),
+        decision_proposed(3, "d:name", "Name the product Upheld", &["naming"]),
+        decision_proposed(4, "d:queue", "Adopt async queue for billing", &["billing"]),
+    ])?;
+
+    match reading(&graph, "is the product still called Upheld")?.data {
+        ResolveOutcome::Ambiguous { candidates } => {
+            let ids: Vec<&str> = candidates.iter().map(|c| c.decision_id.as_str()).collect();
+            assert!(ids.contains(&"d:name"), "got {ids:?}");
+            assert!(
+                ids.contains(&"d:deck") && ids.contains(&"d:site"),
+                "got {ids:?}"
+            );
+        }
+        other => panic!("two full matches on the subject make it a list, got {other:?}"),
+    }
+    Ok(())
+}

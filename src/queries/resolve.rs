@@ -46,6 +46,13 @@
 //! is answered with such a leader never: with other decisions holding every word, it gets the
 //! list.
 //!
+//! A promoted close candidate is held to the bar of a full match that leads with rivals: it is
+//! answered with alone only when its own title and topic keys hold three of the question's words
+//! (all of them, in a shorter question), or the full matches it was promoted over are listed with
+//! it; in a question of three words two are enough while no more than one other decision holds
+//! every word and says one of them in its headline, as for a full match. No more than two
+//! promoted candidates are listed before the first full match (hivemind-vecg4).
+//!
 //! More than half is not enough of a short question (hivemind-jis8). Of three words, two leave a
 //! third to a long rationale that the other decisions on the same subject hold as well as the
 //! leader does, so a leader with two or more such siblings among the full matches (they say a
@@ -124,6 +131,12 @@ const MIN_HEADLINE_WORDS_TO_LEAD_RIVALS: usize = 3;
 /// that, two of three words stay a lead (a decision with one rival on its subject is told apart
 /// by its title).
 const RIVALS_THAT_RAISE_THE_BAR: usize = 2;
+
+/// How many promoted close candidates (`out_heading`) a list shows before its first full match. A
+/// weak full match is out-weighed by every close candidate whose title says a little more of the
+/// question, and those can run to a dozen: the decision that holds every word then sits ninth,
+/// where nobody looks (hivemind-vecg4). Two stay ahead of it, the rest follow it.
+const PROMOTED_AHEAD_OF_FULL_MATCH: usize = 2;
 
 /// Why a decision that has every word asked is still only a close candidate: the description is
 /// negated and the decision's title says all of it outright. Shown beside the candidate wherever
@@ -317,6 +330,7 @@ fn resolve_for(
 
     let truncated = rows.len() > MAX_QUERY_RESULTS;
     rows.truncate(MAX_QUERY_RESULTS);
+    lift_first_full_match(&mut rows);
 
     // The leader's ties among the full matches: the rows that hold as much of what the question
     // is about, lean on no more stand-in words and sit in the same rank tier.
@@ -465,6 +479,35 @@ fn closeness(row: &ResolverCandidateRow) -> (usize, Reverse<usize>, usize) {
     )
 }
 
+/// Moves the first full match up to just behind `PROMOTED_AHEAD_OF_FULL_MATCH` promoted close
+/// candidates, so a list never buries the decisions that hold every word the asker used behind a
+/// long run of decisions that lack one of them (hivemind-vecg4). Only the order of a list changes:
+/// what a call resolves to is decided on the first two rows, which stay where they are.
+fn lift_first_full_match(rows: &mut Vec<ResolverCandidateRow>) {
+    if let Some(at) = rows.iter().position(|row| !row.is_close()) {
+        if at > PROMOTED_AHEAD_OF_FULL_MATCH {
+            let full = rows.remove(at);
+            rows.insert(PROMOTED_AHEAD_OF_FULL_MATCH, full);
+        }
+    }
+}
+
+/// Whether `first`, a close candidate that out-weighs the decisions holding every word (it is
+/// promoted), says enough of the question in its own title and topic keys to be named as the
+/// decision asked about: `MIN_HEADLINE_WORDS_TO_LEAD_RIVALS` of the words (all of them, in a shorter
+/// question), the bar of a full match that leads with rivals. In a question of three words, two
+/// stay enough while fewer than `RIVALS_THAT_RAISE_THE_BAR` of the decisions that hold every word
+/// are on the subject, as jis8 holds a full match there (hivemind-vecg4).
+fn promoted_leader_is_about_it(
+    term_count: usize,
+    rows: &[ResolverCandidateRow],
+    first: &ResolverCandidateRow,
+) -> bool {
+    first.headline_words >= term_count.min(MIN_HEADLINE_WORDS_TO_LEAD_RIVALS)
+        || (first.headline_words * 2 > term_count
+            && rivals_on_the_subject(rows) < RIVALS_THAT_RAISE_THE_BAR)
+}
+
 /// Whether the first of `rows` (a close candidate, the most about the question first) is the one
 /// asked about: its title and topic keys hold enough of the question's words
 /// (`MIN_HEADLINE_WORDS_TO_ANSWER_CLOSE`), it shares enough terms to be named as the answer, and it
@@ -473,6 +516,11 @@ fn closeness(row: &ResolverCandidateRow) -> (usize, Reverse<usize>, usize) {
 /// is not resolved, and neither is an equally close one: after it the lists are ordered by rank
 /// and recency, which say nothing about which of two decisions was meant. A decision of the
 /// opposite polarity is never the one asked about, however many words it shares.
+///
+/// A promoted first has out-weighed decisions that hold every word, so it is held to the bar of a
+/// full match that leads with rivals (`promoted_leader_is_about_it`): two generic words of its
+/// title and topic keys, with the word the question is about only in the rationale of the others,
+/// is not the decision asked about because it out-weighs them (hivemind-vecg4).
 fn close_candidate_leads(term_count: usize, rows: &[ResolverCandidateRow]) -> bool {
     let Some(first) = rows.first() else {
         return false;
@@ -481,6 +529,7 @@ fn close_candidate_leads(term_count: usize, rows: &[ResolverCandidateRow]) -> bo
     !first.polarity_mismatch
         && shared >= MIN_WORDS_TO_ANSWER_CLOSE
         && first.headline_words >= MIN_HEADLINE_WORDS_TO_ANSWER_CLOSE
+        && (!first.promoted || promoted_leader_is_about_it(term_count, rows, first))
         && rows.get(1).is_none_or(|next| {
             (first.promoted && !next.promoted) || closeness(first) < closeness(next)
         })

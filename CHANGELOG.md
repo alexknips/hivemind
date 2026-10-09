@@ -724,6 +724,39 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   back?") still names a decision about something else. MCP tool descriptions for `chain`, `why`,
   `compact_view` and `verify` say so. (hivemind-jis8)
 
+- **`why` and `verify` no longer name a promoted close candidate alone on two generic words of its
+  title, and a list puts the decisions that hold every word where they are seen.** "Does the
+  decision page show supersession dates?" was answered with the contested-then-superseded note
+  ("supersession" and "page" in its title, "dates" missing) as a close match, while the status
+  history decision the question is about, one of four that hold all four words, sat ninth in the
+  list behind a dozen close candidates promoted over a weak full match. A close candidate that
+  is promoted over the decisions holding every word is now named alone only when its title and
+  topic keys hold three of the question's words (all of them, in a shorter question), the bar
+  of a full match that leads with rivals; with fewer, the call lists it and the full matches
+  (`outcome: ambiguous`). In a question of three words two stay enough while no more than one
+  other decision holds every word and says one of the words in its headline, as for a full
+  match since hivemind-jis8. A list shows at most two promoted close candidates before its
+  first full match. Only the order of a list and this one gate change; nothing in the write
+  path, in recall or in search. Through the real
+  binary on a copy of today's ledger (534 events), 406 questions: the checker's 123 keep their
+  54 right one-call answers and go from 9 wrong one-call
+  answers to 8 ("does the decision page show supersession dates?" lists 6d2c7a02 third);
+  the 34 of hivemind-eral, 14 hard, 41 hold-out, 32 fresh, 55 published and 30 blind
+  questions lose no right answer; of 15 unrelated controls the answered ones go from 6 to 5
+  ("will renaming the repo break CI?" is listed). On a copy of the live cell's 2302 events,
+  "does every acceptance or rejection get its own line in a decision's history?" and "does the
+  decision page show supersession dates?" now list the status history decision second and
+  third instead of naming an unrelated close match. Not fixed: a close candidate that leads
+  on two generic words of its title with no promotion over anything ("after a disputed decision
+  is replaced, do we still show who pushed back?", "does the command-line binary get a new name
+  along with the new company?") and one promoted on a hair of weight through single-letter terms
+  ("why could a decision page show its options as A, C, B, ...") still name a decision about
+  something else: no feature of the candidate separates them from the right close answers
+  ("is anyone working on swapping the product name right now?"), and every gate that lists them
+  lists 13 to 16 of those too. Dropping single-letter terms and a promotion margin were
+  measured and lose right answers. MCP tool descriptions for `chain`, `why`, `compact_view`
+  and `verify` say so. (hivemind-vecg4)
+
 - **A decision captured from a session that was classified days later says when it was said,
   not when the classifier ran.** A decision the classifier captured without naming a source
   turn was dated at the classification's own time, so `why` and `verify` showed a session said

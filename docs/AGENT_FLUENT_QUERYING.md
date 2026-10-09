@@ -205,7 +205,9 @@ differences from a writer, both for a description no decision matches in full
   two of them in its own title and topic keys, it is `Resolved` and carries its
   `missing_terms`. (So is a promoted close candidate that leads the
   others, see *what the question is about* below, though a decision that holds
-  every word exists; it needs the same two headline words.) A candidate whose
+  every word exists; it needs three of the question's words in its headline, all
+  of them in a shorter question, hivemind-vecg4, or two of three while at most one
+  other decision holding every word says one of them in its headline.) A candidate whose
   headline holds fewer than two of the words is listed, never answered with. (The
   question a decision records orders it, as part of *what the question is about*, but
   does not count here: it can be a paragraph long, and a decision with a long one holds
@@ -279,7 +281,10 @@ So where the words sit is compared before whether every word is somewhere:
   the reference. A close candidate whose aboutness is strictly greater than every one
   of theirs is *promoted*: it is listed before them, and a verb that only reads
   answers with it, as for any close candidate (it shares at least two terms and leads
-  the other promoted ones), naming what it lacks in `close_match`. A verb that writes
+  the other promoted ones) and only when three of the question's words sit in its title
+  and topic keys (all of them, in a shorter question; two of three while at most one
+  other full match says one of them in its headline), naming what it lacks in
+  `close_match`; with fewer it gets the `Ambiguous` list. A verb that writes
   never picks it; it gets an `Ambiguous` list with the promoted candidate first. A
   close candidate of the opposite polarity is never promoted. Close candidates that
   are not promoted are dropped when a decision holds every word, as before.
@@ -326,6 +331,20 @@ So where the words sit is compared before whether every word is somewhere:
   naming it alone. With no close candidate there is no one to list it among and it is
   answered with; so is a decision the question names outright. A verb that writes keeps
   the old rule: the one decision that holds every word is what it picks.
+- A close candidate that out-weighs the full matches is held to the bar of a full match
+  that leads with rivals (hivemind-vecg4). "Does the decision page show supersession
+  dates?" is held in full by four decisions, and the one that says "supersession" and
+  "page" in its title lacks "dates": it is promoted over them (listed first), and it
+  said two of the four words in its headline, which is not the decision the question is
+  about. A promoted close candidate is now named alone only when its title and topic keys
+  hold three of the question's words (all of them, in a shorter question); with fewer,
+  the call lists it and the full matches (`outcome: ambiguous`). A list shows at most two
+  promoted close candidates before its first full match, so the decisions that hold
+  every word are not buried behind a dozen that lack one. Only the order of a list
+  changes; what a call resolves to is still decided by its first two entries. Not
+  fixed: a close candidate that leads on two generic words of its title and holds no
+  promotion over anything ("after a disputed decision is replaced, do we still show who
+  pushed back?") is still named alone when it is closer than the next.
 - **A verb that writes is never answered with a full match by where the words sit**
   (hivemind-293q). `disagree`, `retitle`, `move`, `supersede`, `ground` and a grounding
   premise say that a description that matches more than one decision lists the
