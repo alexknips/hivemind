@@ -1038,6 +1038,12 @@ struct ScoredDecisionSearchResult {
     headline_words: usize,
     /// `SearchMatchInfo::headline_matched`.
     headline_matched: usize,
+    /// Which of the question's terms (by position, bit `n` for term `n`) the decision's own title
+    /// and topic keys hold as a word or a form of one: the set `headline_words` counts.
+    headline_mask: u64,
+    /// Which of the question's terms its title and topic keys hold in any form
+    /// (`SearchMatchInfo::headline_any`).
+    headline_any_mask: u64,
     /// How much of the question the decision's title, topic keys and recorded question carry
     /// (`About`); nothing for a literal match, which has no words to weigh.
     about: About,
@@ -1264,6 +1270,8 @@ fn collect_graph_search_results(
             continue;
         };
         let headline_words = match_info.headline_words.len();
+        let headline_mask = term_mask(&match_info.headline_words);
+        let headline_any_mask = term_mask(&match_info.headline_any);
         let reached: BTreeSet<usize> = match_info
             .held_words
             .union(&match_info.stand_in_reached)
@@ -1316,6 +1324,8 @@ fn collect_graph_search_results(
             stand_ins: match_info.stand_in_terms,
             headline_words,
             headline_matched: match_info.headline_matched,
+            headline_mask,
+            headline_any_mask,
             about: About::default(),
             promoted: false,
             fields,
@@ -1352,6 +1362,15 @@ fn collect_graph_search_results(
         &weights,
         terms.terms.len(),
     ))
+}
+
+/// The terms of a question, by position, as bits of one number: bit `n` is term `n`. A question
+/// has far fewer than 64 terms; a term past that is left out.
+fn term_mask(terms: &BTreeSet<usize>) -> u64 {
+    terms
+        .iter()
+        .filter(|term| **term < u64::BITS as usize)
+        .fold(0, |mask, term| mask | (1 << term))
 }
 
 /// What `admit_below_bar` and `About` know of a matched decision.
@@ -1604,6 +1623,12 @@ pub(crate) struct ResolverCandidateRow {
     /// as a word, a form of one, a stand-in or a part of a longer word. Unlike `headline_terms`
     /// it is counted for a full match too.
     pub(crate) headline_matched: usize,
+    /// Which of the question's terms its own title and topic keys hold as a word or a form of one
+    /// (bit `n` for term `n`); `headline_words` is its size.
+    pub(crate) headline_mask: u64,
+    /// Which of the question's terms its title and topic keys hold in any form: as a word, a form
+    /// of one, a stand-in or a part of a longer word (`headline_matched` is its size).
+    pub(crate) headline_any_mask: u64,
     /// How many times its title and topic keys hold a term as a word (a term both hold counts
     /// twice). Among candidates that tie on everything else that says where the words sit, the
     /// decision filed under the word its title says is the one about it, before recency decides.
@@ -1660,6 +1685,8 @@ pub(crate) fn collect_resolver_candidates(
             stand_in_terms: scored.stand_ins,
             headline_words: scored.headline_words,
             headline_matched: scored.headline_matched,
+            headline_mask: scored.headline_mask,
+            headline_any_mask: scored.headline_any_mask,
             headline_hits: scored.headline_hit_count,
             about: scored.about,
             promoted: false,
@@ -1725,6 +1752,8 @@ struct SearchMatchInfo {
     /// How many of the terms the title or topic keys contain in any form (a word, a form of one, a
     /// stand-in or a part of a longer word), for a full match as well as a close one.
     headline_matched: usize,
+    /// Which terms (by position) those are: the set `headline_matched` counts.
+    headline_any: BTreeSet<usize>,
     /// How many times a field of the title or topic keys holds a term as a word (a term the title
     /// and a topic key both hold counts twice). Among decisions below the bar that hold a word
     /// each, the one whose title and topic keys both name it is the one about it.
@@ -1872,6 +1901,7 @@ fn evaluate_search_match(
     // The matched terms that some field holds as the word itself or a form of it.
     let mut worded_terms: BTreeSet<&String> = BTreeSet::new();
     let mut headline_terms = BTreeSet::new();
+    let mut headline_any = BTreeSet::new();
     // What `admit_below_bar` and `About` need from an asker that matches words: which terms a
     // field holds as a whole word, which of those the title or topic keys hold, and which of those
     // the title holds. Only the asker that reads admits a decision below the bar.
@@ -1920,6 +1950,7 @@ fn evaluate_search_match(
                 }
                 if in_headline {
                     headline_terms.insert(term.clone());
+                    headline_any.insert(index);
                 }
                 if track_words
                     && holds_whole_word(search_terms.related.get(index), &value_lower, term)
@@ -2012,6 +2043,7 @@ fn evaluate_search_match(
         held_words,
         headline_words,
         headline_matched,
+        headline_any,
         title_words,
         about_words,
         stand_in_headline,

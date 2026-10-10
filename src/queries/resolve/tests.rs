@@ -2220,3 +2220,158 @@ fn a_promoted_close_candidate_with_two_of_three_words_is_listed_among_two_full_m
     }
     Ok(())
 }
+
+/// The decisions that hold every word of "what order is the decision list in?" and of "what order
+/// is the launch list in?" (hivemind-bnces): one whose title says two of the words about another
+/// subject, and up to three that say one of them each in their titles and the rest in their
+/// rationales. `with_measures` adds the fourth full match.
+fn ordering_events(with_measures: bool) -> Vec<Event> {
+    let mut events = vec![
+        decision_proposed_because(
+            1,
+            "d:listing",
+            "Listing order after launch: web store first, then marketplace",
+            "The web store comes first because the storefront opens there; the marketplace and the retailers follow in a later step.",
+            &["distribution"],
+        ),
+        decision_proposed_because(
+            2,
+            "d:options",
+            "Option page orders choices by letter only when each has one",
+            "The server sends the chosen one first and the rest by id, so a page could read A, C, B before launch. Sorting by letter fixes it; the list of choices is kept as recorded.",
+            &["option-page"],
+        ),
+        decision_proposed_because(
+            3,
+            "d:labels",
+            "Option page pairs plain labels with the reason in the list",
+            "Plain labels never matched the A, B, C list, so no choice showed a reason before launch. Pairing by words keeps the order of the list.",
+            &["option-page"],
+        ),
+    ];
+    if with_measures {
+        events.push(decision_proposed_because(
+            4,
+            "d:measures",
+            "Across-decisions measures: record the ask first, then attention lists",
+            "Record the ask first, in this order: the ask, the attention lists, then a timeline, all before launch.",
+            &["metrics"],
+        ));
+    }
+    events.push(decision_proposed(
+        5,
+        "d:queue",
+        "Adopt async queue for billing",
+        &["billing"],
+    ));
+    events
+}
+
+#[test]
+fn four_full_matches_that_share_the_words_among_their_headlines_are_listed_not_answered(
+) -> Result<()> {
+    let graph = graph_from_events(ordering_events(true))?;
+
+    // d:listing says both words in its title, the others one each (or in a different form): the
+    // words are common, every word is said in some other headline, and the one that says most of
+    // them is about the order of a listing, not of a list of decisions.
+    for question in [
+        "what order is the decision list in?",
+        "which order is the decision list in?",
+    ] {
+        match resolve_decision_for_reading(&graph, question, None)?.data {
+            ResolveOutcome::Ambiguous { candidates } => {
+                let ids: Vec<&str> = candidates.iter().map(|c| c.decision_id.as_str()).collect();
+                assert_eq!(ids.first(), Some(&"d:listing"), "{question:?}: {ids:?}");
+                assert_eq!(ids.len(), 4, "{question:?}: {ids:?}");
+                assert!(
+                    candidates.iter().all(|c| c.missing_terms.is_empty()),
+                    "every one holds every word: {candidates:?}"
+                );
+            }
+            other => panic!("{question:?} is listed, not answered: {other:?}"),
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn three_full_matches_leave_the_leader_answered() -> Result<()> {
+    let graph = graph_from_events(ordering_events(false))?;
+
+    // The same question with one full match fewer: the bar of four is not met, the leader says
+    // both words in its title and the rivals one each, as before.
+    match resolve_decision_for_reading(&graph, "what order is the decision list in?", None)?.data {
+        ResolveOutcome::Resolved { candidate } => assert_eq!(candidate.decision_id, "d:listing"),
+        other => panic!("three full matches keep the leader: {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn four_full_matches_are_answered_when_the_leader_names_a_word_alone() -> Result<()> {
+    let graph = graph_from_events(ordering_events(true))?;
+
+    // "launch" is in d:listing's title and only in the rationales of the others: the question names
+    // its subject in a word that one headline alone says.
+    match resolve_decision_for_reading(&graph, "what order is the launch list in?", None)?.data {
+        ResolveOutcome::Resolved { candidate } => assert_eq!(candidate.decision_id, "d:listing"),
+        other => panic!("a word only the leader names makes it the answer: {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_verb_that_writes_still_lists_four_full_matches() -> Result<()> {
+    let graph = graph_from_events(ordering_events(true))?;
+
+    match resolve_decision_by_description(&graph, "what order is the decision list in?", None)?.data
+    {
+        ResolveOutcome::Ambiguous { candidates } => assert_eq!(candidates.len(), 4),
+        other => panic!("a writer lists several full matches: {other:?}"),
+    }
+    Ok(())
+}
+
+fn headline_candidate(id: &str, said_as_word: u64, said_in_any_form: u64) -> ResolverCandidateRow {
+    ResolverCandidateRow {
+        decision_id: id.to_owned(),
+        title: String::new(),
+        rank: 1,
+        event_origin: 0,
+        matched_fields: Vec::new(),
+        missing_terms: Vec::new(),
+        polarity_mismatch: false,
+        headline_terms: 0,
+        stand_in_terms: 0,
+        headline_words: said_as_word.count_ones() as usize,
+        headline_matched: said_in_any_form.count_ones() as usize,
+        headline_mask: said_as_word,
+        headline_any_mask: said_in_any_form,
+        headline_hits: 0,
+        about: Default::default(),
+        promoted: false,
+    }
+}
+
+#[test]
+fn a_word_another_headline_says_in_any_form_is_not_the_leaders_alone() {
+    // Terms 0, 1 and 2. The leader says all three as words. One other says terms 0 and 1; the
+    // other says term 2 only as part of a longer word ("shown" for "show").
+    let leader = headline_candidate("d:leader", 0b111, 0b111);
+    let says_two = headline_candidate("d:two", 0b011, 0b011);
+    let says_third_loosely = headline_candidate("d:loose", 0b001, 0b101);
+    let says_third_nowhere = headline_candidate("d:rationale", 0b001, 0b001);
+
+    assert!(
+        !leader_names_a_word_alone(&[leader, says_two, says_third_loosely]),
+        "every word is said in some other headline, one of them loosely"
+    );
+
+    let leader = headline_candidate("d:leader", 0b111, 0b111);
+    let says_two = headline_candidate("d:two", 0b011, 0b011);
+    assert!(
+        leader_names_a_word_alone(&[leader, says_two, says_third_nowhere]),
+        "term 2 sits in the leader's headline and in no other"
+    );
+}

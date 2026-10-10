@@ -67,6 +67,14 @@
 //! names it outright. With no close candidate there is no one to list it among, and it is
 //! answered with, as is the only decision a verb that writes finds (`thin_sole_full_match`).
 //!
+//! Common words are not told apart by the headline (hivemind-bnces). With
+//! `FULL_MATCHES_THAT_MAKE_WORDS_COMMON` decisions or more holding every word, the leader is
+//! answered with alone only if its own title and topic keys say a word of the question that none of
+//! the other full matches say in theirs (`leader_names_a_word_alone`): a word that only one
+//! headline names is the subject the question is about, and the words the headlines name in turns
+//! are not. Otherwise the full matches are listed, the leader first. The decision the question
+//! names outright keeps its answer; below that many full matches the bars above apply as before.
+//!
 //! A negation in the description ("don't adopt Kafka", "why didn't we ...", "do not ...") is not a
 //! word to find: it never appears in `missing_terms`. It is polarity. A decision is the opposite of
 //! a negated description when its own title says every word asked about outright, outside any
@@ -137,6 +145,13 @@ const RIVALS_THAT_RAISE_THE_BAR: usize = 2;
 /// question, and those can run to a dozen: the decision that holds every word then sits ninth,
 /// where nobody looks (hivemind-vecg4). Two stay ahead of it, the rest follow it.
 const PROMOTED_AHEAD_OF_FULL_MATCH: usize = 2;
+
+/// How many decisions holding every word of a question make its words common ones. From this many
+/// on, the decisions that hold every word are not told apart by who says most of the words in the
+/// headline: a plain question finds that many decisions that each say one or two of its words in
+/// their titles and the rest in their rationales, and the one that says most of them is as likely
+/// to be about another subject as the question's own (hivemind-bnces).
+const FULL_MATCHES_THAT_MAKE_WORDS_COMMON: usize = 4;
 
 /// Why a decision that has every word asked is still only a close candidate: the description is
 /// negated and the decision's title says all of it outright. Shown beside the candidate wherever
@@ -535,6 +550,27 @@ fn close_candidate_leads(term_count: usize, rows: &[ResolverCandidateRow]) -> bo
         })
 }
 
+fn full_match_count(rows: &[ResolverCandidateRow]) -> usize {
+    rows.iter().filter(|row| !row.is_close()).count()
+}
+
+/// Whether the first of `rows` says, in its own title or topic keys, a word of the question that
+/// none of the other decisions holding every word says there: the one thing that sets it apart
+/// from them when every word is common. A word only one of them names in its headline is the
+/// subject the question is about; the words they each name in turns are not. The others count
+/// for any way of saying it (another form of the word, a stand-in, a part of a longer word): a
+/// title that says "shown" does not leave "show" to the title that says "showing".
+fn leader_names_a_word_alone(rows: &[ResolverCandidateRow]) -> bool {
+    let Some((first, rest)) = rows.split_first() else {
+        return false;
+    };
+    let named_by_others = rest
+        .iter()
+        .filter(|row| !row.is_close())
+        .fold(0, |mask, row| mask | row.headline_any_mask);
+    first.headline_mask & !named_by_others != 0
+}
+
 /// Whether the first of `rows` (full matches, the most about the question first) is the one asked
 /// about, so that a call answers with it alone. When other decisions hold every word too, a leader
 /// that out-weighs them (`About`) can do it by one word in its title or topic keys, with no more
@@ -544,8 +580,10 @@ fn close_candidate_leads(term_count: usize, rows: &[ResolverCandidateRow]) -> bo
 /// question's words; and, when at least `RIVALS_THAT_RAISE_THE_BAR` other full matches are on its
 /// subject too, `MIN_HEADLINE_WORDS_TO_LEAD_RIVALS` of them (all of them, in a shorter question:
 /// two of three words is a majority and still a third of the question left to a rationale that
-/// its siblings hold as well, hivemind-jis8); otherwise the full matches are listed, most about
-/// the question first. The only decision that holds every word has none to be listed among, and the decision
+/// its siblings hold as well, hivemind-jis8); and, with `FULL_MATCHES_THAT_MAKE_WORDS_COMMON` full
+/// matches or more, a word of the question that none of the others says in its own headline
+/// (`leader_names_a_word_alone`, hivemind-bnces); otherwise the full matches are listed, most
+/// about the question first. The only decision that holds every word has none to be listed among, and the decision
 /// the question names outright (its id or title is the question, or it records the question as
 /// asked) is the one asked about whatever its words: both are answered with as before, the only
 /// one unless it is a thin match with close candidates to be listed among
@@ -569,7 +607,9 @@ fn full_match_leads(asker: Asker, term_count: usize, rows: &[ResolverCandidateRo
                 || first.about.is_named()
                 || (first.headline_words * 2 > term_count
                     && (first.headline_words >= term_count.min(MIN_HEADLINE_WORDS_TO_LEAD_RIVALS)
-                        || rivals_on_the_subject(rows) < RIVALS_THAT_RAISE_THE_BAR))
+                        || rivals_on_the_subject(rows) < RIVALS_THAT_RAISE_THE_BAR)
+                    && (full_match_count(rows) < FULL_MATCHES_THAT_MAKE_WORDS_COMMON
+                        || leader_names_a_word_alone(rows)))
         }
     }
 }
@@ -580,8 +620,12 @@ fn full_match_leads(asker: Asker, term_count: usize, rows: &[ResolverCandidateRo
 fn absorb_record(shown: &mut ResolverCandidateRow, other: ResolverCandidateRow) {
     shown.rank = shown.rank.min(other.rank);
     shown.stand_in_terms = shown.stand_in_terms.min(other.stand_in_terms);
+    if other.headline_words > shown.headline_words {
+        shown.headline_mask = other.headline_mask;
+    }
     shown.headline_words = shown.headline_words.max(other.headline_words);
     shown.headline_matched = shown.headline_matched.max(other.headline_matched);
+    shown.headline_any_mask |= other.headline_any_mask;
     shown.headline_hits = shown.headline_hits.max(other.headline_hits);
     if other.about.cmp_about(&shown.about).is_gt() {
         shown.about = other.about;

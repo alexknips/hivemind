@@ -479,6 +479,27 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`why`, `verify`, `chain` and `compact_view` list the decisions instead of naming one when
+  four or more hold every word of a short question and none of them is told apart by a word
+  of its own.** "What order is the decision list in?" answered the decision on the order of
+  the listings, and "what does the decision page show first?" answered the one on the first
+  five suggestions, in one call and with no mention of the other seven or eight decisions
+  that hold the same words. With four or more decisions holding every word, the first is now
+  named alone only if its title or topic keys say a word of the question that no other
+  decision holding every word says in its own, in any form; otherwise they come back in the
+  `ambiguous` shape, the one that is most about the question first, none picked. A question
+  that names its subject in a word only one headline carries, and a decision the question
+  names outright (id, title or the question it records), keep their one-call answer; with
+  three decisions holding every word or fewer nothing changes, and a verb that writes lists
+  several full matches as before. Through the real binary on a copy of the crew ledger (534
+  events), 891 questions (the checker's 143, the earlier batteries, 414 generated and 40
+  new ones of this shape): wrong one-call answers go from 18 to 15, and four right
+  one-call answers (the decision asked about) now come back listed first; the 74 unrelated
+  controls answer as before. On the 455-event prefix of the same ledger wrong answers go
+  from 36 to 32. Not fixed: a leader that says a word of its own in its headline, or a
+  question that fewer than four decisions answer in full, is still named when it is not the
+  decision asked about. `docs/AGENT_FLUENT_QUERYING.md` and the four tool descriptions
+  state the rule. (hivemind-bnces)
 - **`recall`, `why` and `verify` list the decision whose title is about the one word the
   question is about, even when the question's other words sit in other decisions'
   rationales.** "What licence is the code under?" returned four decisions that say "code" and

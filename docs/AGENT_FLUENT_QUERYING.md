@@ -331,6 +331,20 @@ So where the words sit is compared before whether every word is somewhere:
   naming it alone. With no close candidate there is no one to list it among and it is
   answered with; so is a decision the question names outright. A verb that writes keeps
   the old rule: the one decision that holds every word is what it picks.
+- Four decisions that hold every word are not told apart by who holds most of the words
+  in the headline (hivemind-bnces). A short question made of common words ("what order is
+  the decision list in?", "what does the decision page show first?") finds a handful of
+  decisions that each say one or two of its words in their titles and topic keys and the
+  rest in their rationales; the one that says most of them is about the order of a
+  listing, or about the first five of a suggestion layer, not about what was asked. With
+  **four or more** decisions holding every word, the leader is answered with alone only if
+  its own title and topic keys also say a word of the question that **none of the other
+  full matches say in theirs**: the one thing that sets it apart when every word is common.
+  Otherwise the full matches come back as an `Ambiguous` list, the leader first, each with
+  nothing missing. A question that names its subject in a word only one decision's headline
+  holds keeps its one-call answer, as does the decision the question names outright; with
+  three full matches or fewer the rules above apply as before. A verb that writes lists
+  several full matches either way.
 - A close candidate that out-weighs the full matches is held to the bar of a full match
   that leads with rivals (hivemind-vecg4). "Does the decision page show supersession
   dates?" is held in full by four decisions, and the one that says "supersession" and
@@ -583,7 +597,9 @@ hold more than half of the question's words (all three of a three-word question,
 or more of the other full matches are on its subject), or the full matches are listed
 (hivemind-5ctc, hivemind-jis8, *what the question is about*, §1.1). The only one that
 holds every word is listed among the close candidates when it says fewer than two of the
-words in its headline and there are close candidates (hivemind-jis8). That is the gate of
+words in its headline and there are close candidates (hivemind-jis8). With four or more decisions holding every word, the first is
+also named only when its headline says a word of the question that none of the others say
+in theirs (hivemind-bnces). That is the gate of
 a verb that only reads. The gate of a verb that writes is stricter, as the paragraph above asks for
 write verbs: with several decisions holding every word, only the one the description
 names outright (rank 0: its id or title, or the question it records) is Resolved, and
