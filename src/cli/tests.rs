@@ -6459,6 +6459,75 @@ fn decision_capture_provenance_flags_still_win_over_a_typed_actor() {
 }
 
 #[test]
+fn an_unnamed_write_is_the_agent_the_environment_shows() {
+    // hivemind-jglb7: the default actor is a guess about who is at the keyboard; with an agent
+    // in the environment it is the agent that acts.
+    let mut cli = Cli::parse_from(["hivemind", "query", "recent", "--since", "7d"]);
+    cli.actor = "human:alice".to_owned();
+
+    cli.adopt_ambient_agent(Some("agent:claude:crew-x".to_owned()));
+    assert_eq!(cli.actor, "agent:claude:crew-x");
+    assert!(
+        !cli.actor_given.0,
+        "capture still derives its provenance (source_ref) from the environment"
+    );
+}
+
+#[test]
+fn a_typed_actor_and_an_agent_actor_already_named_are_left_alone() {
+    let mut typed = Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:alice",
+        "query",
+        "recent",
+        "--since",
+        "7d",
+    ]);
+    typed.adopt_ambient_agent(Some("agent:claude:crew-x".to_owned()));
+    assert_eq!(
+        typed.actor, "human:alice",
+        "a caller who says who acts is believed"
+    );
+
+    // `HIVEMIND_ACTOR=agent:...` is the default actor, and already an agent: nothing to guess.
+    let mut named = Cli::parse_from(["hivemind", "query", "recent", "--since", "7d"]);
+    named.actor = "agent:codex:pinned".to_owned();
+    named.adopt_ambient_agent(Some("agent:claude:crew-x".to_owned()));
+    assert_eq!(named.actor, "agent:codex:pinned");
+}
+
+#[test]
+fn a_plain_terminal_keeps_the_human_default() {
+    let mut cli = Cli::parse_from(["hivemind", "query", "recent", "--since", "7d"]);
+    cli.actor = "human:alice".to_owned();
+
+    cli.adopt_ambient_agent(None);
+    assert_eq!(cli.actor, "human:alice");
+}
+
+#[test]
+fn settings_stay_with_the_person_when_an_agent_takes_over_the_writes() {
+    // The current-project setting a person made at their terminal is read under the key it
+    // was written under, not under the agent that now records the writes.
+    let mut cli = Cli::parse_from(["hivemind", "query", "recent", "--since", "7d"]);
+    cli.adopt_ambient_agent(Some("agent:claude:crew-x".to_owned()));
+    assert_eq!(cli.actor, "agent:claude:crew-x");
+    assert_eq!(cli.person(), crate::identity::default_actor());
+
+    let typed = Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:alice",
+        "query",
+        "recent",
+        "--since",
+        "7d",
+    ]);
+    assert_eq!(typed.person(), "human:alice");
+}
+
+#[test]
 fn ingest_slack_thread_creates_queryable_decision_with_slack_provenance() {
     let hivemind_dir = unique_test_dir("ingest-slack-thread");
     let fixture = workspace_fixture("tests/fixtures/slack/thread_with_mention.json");

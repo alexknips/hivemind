@@ -86,6 +86,19 @@ pub fn agent_present_in_env() -> bool {
     agent_tool_from_env().is_some() || agent_session_from_env("codex").is_some()
 }
 
+/// The agent actor a CLI write belongs to when the caller named no actor: the same
+/// `agent:<tool>:<name>` that `emit decision.capture` derives from the environment, or `None`
+/// where the environment shows no agent (a person at a plain terminal keeps the human default,
+/// hivemind-6ait). Without this, an agent's `ground`, `retitle`, `disagree` or `supersede`
+/// was filed under the git user -- a person who never made the change (hivemind-jglb7).
+pub fn ambient_agent_actor() -> Option<String> {
+    agent_present_in_env().then(|| {
+        let tool = default_agent_tool();
+        let session = default_agent_session(&tool);
+        agent_actor_id(&tool, &session)
+    })
+}
+
 pub fn default_agent_session(tool: &str) -> String {
     agent_session_from_env(tool).unwrap_or_else(|| MANUAL_AGENT_SESSION.to_owned())
 }

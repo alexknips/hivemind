@@ -9,7 +9,7 @@ use crate::events::{
     BlockerPriority, ProjectAnchorKind as EventProjectAnchorKind,
     ProjectLinkKind as EventProjectLinkKind, ProjectSource as EventProjectSource,
 };
-use crate::identity::default_actor;
+use crate::identity::{ambient_agent_actor, default_actor};
 use crate::ingest::{
     DocumentConflictResolutionAction, DocumentImportFormat, DocumentPreparationFormat,
     DEFAULT_SLACK_MENTION,
@@ -68,6 +68,35 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Command,
+}
+
+impl Cli {
+    /// Records this run's writes as the agent the environment shows, when nobody named an
+    /// actor. The default actor is a guess about who is at the keyboard, and with an agent in
+    /// the environment the guess is wrong: the git user never ran an agent's `ground`,
+    /// `retitle`, `disagree`, `supersede` or `move`. A typed `--actor` is believed, and so is a
+    /// `HIVEMIND_ACTOR` that already names an agent; `None` (no agent around) keeps the human
+    /// default (hivemind-jglb7).
+    pub fn adopt_ambient_agent(&mut self, ambient_agent: Option<String>) {
+        if self.actor_given.0 || self.actor.trim().starts_with("agent:") {
+            return;
+        }
+        if let Some(agent_actor) = ambient_agent {
+            self.actor = agent_actor;
+        }
+    }
+
+    /// The person whose machine-local settings this run reads and writes (the current
+    /// project): what `actor` was before an agent in the environment took over the writes. A
+    /// setting a person made at their terminal is still theirs when an agent works on their
+    /// behalf.
+    pub fn person(&self) -> String {
+        if self.actor_given.0 {
+            self.actor.clone()
+        } else {
+            default_actor()
+        }
+    }
 }
 
 /// Whether `--actor` was typed on the command line, as opposed to left to fall back to
@@ -2723,5 +2752,7 @@ impl CliExit {
 }
 
 pub fn parse() -> Cli {
-    Cli::parse()
+    let mut cli = Cli::parse();
+    cli.adopt_ambient_agent(ambient_agent_actor());
+    cli
 }

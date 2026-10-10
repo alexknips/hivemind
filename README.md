@@ -44,7 +44,11 @@ Every write carries actor provenance. Use `--actor` to override the actor with
 a stable human id such as `human:alice` or an agent id such as
 `agent:codex:<name>` (a stable identity, not a raw session id). If `--actor`
 is omitted, the CLI falls back to
-`HIVEMIND_ACTOR`, then `human:<git config user.email>`, then a local user name.
+`HIVEMIND_ACTOR`, then `human:<git config user.email>`, then a local user name. When
+the environment shows an agent (an agent tool or session variable, or a Gas City
+identity), the fallback is that agent's `agent:<tool>:<name>` instead of the git
+user, so an agent's `ground`, `retitle`, `disagree` and `supersede` are recorded as
+the agent that ran them; a `HIVEMIND_ACTOR` that already names an agent is kept.
 
 To capture and query the first real decision in the current directory:
 

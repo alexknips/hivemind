@@ -479,6 +479,19 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **An agent's `ground`, `retitle`, `disagree`, `supersede` and `move` from the CLI are
+  recorded as the agent, not as the person whose git email is configured.** `emit
+  decision.capture` already filed an agent's capture under the agent, but the follow-up
+  verbs with no `--actor` fell back to `human:<git user.email>`: a `disagree` an agent ran
+  turned a decision `contested` with that person named as the one who rejected it, a
+  `ground` read "attributed later by human:...", and a `supersede` was accepted as the person
+  and filed in their personal project. That includes the `hivemind ground --id ...
+  --rests-on-decision ...` command the cited-not-linked hint prints. With an agent in the
+  environment (a tool or session variable, or a Gas City identity) and no `--actor`, every
+  CLI write now records `agent:<tool>:<name>`, the same actor the capture derives. A plain
+  terminal with no agent still records the person, a typed `--actor` still wins, and a
+  `HIVEMIND_ACTOR` that already names an agent is kept. The current-project setting a
+  person made with `project use` is still read under the person's key. (hivemind-jglb7)
 - **A rationale that quotes a full decision id is no longer refused as a "bare list item"
   about one time in five.** The capture check for a reference into a chat list (`1a`, `2. a`)
   read a four-digit uuid group of three digits and a letter, such as the `612a` in

@@ -303,7 +303,7 @@ fn run_mcp(cli: &Cli, args: &McpArgs) -> Result<String> {
         }
     }
     if args.project_from_context {
-        config = config.with_project_context(ProjectContextEnv::from_process(&cli.actor));
+        config = config.with_project_context(ProjectContextEnv::from_process(&cli.person()));
     }
     crate::mcp::serve_stdio(&config)?;
     // The stdio loop only returns once stdin closes — no payload to print.
@@ -860,7 +860,7 @@ pub(crate) fn run_emit_with_notices<W: IoWrite>(
         cli,
         emit,
         notices,
-        &ProjectContextEnv::from_process(&cli.actor),
+        &ProjectContextEnv::from_process(&cli.person()),
     )
 }
 
@@ -1515,7 +1515,7 @@ pub(crate) fn run_supersede_with_notices<W: IoWrite>(
         cli,
         args,
         notices,
-        &ProjectContextEnv::from_process(&cli.actor),
+        &ProjectContextEnv::from_process(&cli.person()),
     )
 }
 
@@ -1662,7 +1662,7 @@ pub(crate) fn run_review_session<R: BufRead, W: IoWrite>(
 
     let commands = Commands::new_with_context(
         &ledger,
-        CommandContext::new(tenant_id.clone(), EventProvenance::human(cli.actor.clone())),
+        CommandContext::new(tenant_id.clone(), fluent_write_provenance(&cli.actor)),
     );
     let mut actions = Vec::new();
     let mut quit = false;
@@ -4316,12 +4316,13 @@ fn run_project_decisions(cli: &Cli, args: &ProjectDecisionsArgs) -> Result<Strin
 fn run_project_show_current(cli: &Cli) -> Result<String> {
     let tenant_id = cli_tenant(cli)?;
     let store = CurrentProjectStore::new(&cli.hivemind_dir);
-    let handle = store.get(tenant_id.as_str(), cli.actor.trim())?;
+    let person = cli.person();
+    let handle = store.get(tenant_id.as_str(), person.trim())?;
 
     format_current_project_output(
         cli.json,
         &CurrentProjectOutput {
-            actor: cli.actor.trim().to_owned(),
+            actor: person.trim().to_owned(),
             tenant: tenant_id.as_str().to_owned(),
             handle,
         },
@@ -4336,7 +4337,8 @@ fn run_project_show_current(cli: &Cli) -> Result<String> {
 /// the setting can never point at a typo (A3's refusal rule).
 fn run_project_use(cli: &Cli, args: &ProjectUseArgs) -> Result<String> {
     let tenant_id = cli_tenant(cli)?;
-    let actor = cli.actor.trim();
+    let person = cli.person();
+    let actor = person.trim();
     let store = CurrentProjectStore::new(&cli.hivemind_dir);
 
     match (args.handle.as_deref(), args.clear) {

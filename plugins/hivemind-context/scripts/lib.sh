@@ -184,7 +184,9 @@ cli_has_flag() {
 # hivemind_context_exec [--write] [--project-from-context] <subcommand...>
 # --write injects `--actor agent:<tool>:<name>` ahead of the subcommand so
 # disagree/supersede record agent provenance in actor_id rather than falling
-# back to the CLI's git-derived human default. Read verbs need no such
+# back to the CLI's git-derived human default (a CLI before hivemind-jglb7 does
+# that even in an agent session; a newer one derives the agent itself, and a typed
+# --actor still wins). Read verbs need no such
 # override; they log the CLI's own default actor.
 # --project-from-context, for the verb that records a new decision (supersede),
 # hands the CLI the "work out the project from where this runs" switch. It is

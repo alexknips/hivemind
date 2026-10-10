@@ -197,6 +197,13 @@ An agent stays an agent: with an agent in the environment and no `--actor`
 typed, the `agent:<tool>:<name>` derivation above applies. The five provenance
 flags are the fuller form the capture plugins pass and win over `--actor`.
 
+The follow-up verbs (`ground`, `retitle`, `disagree`, `supersede`, `move`, `accept`,
+`reject`) follow the same rule for who is recorded: with an agent in the environment
+and no `--actor` typed they record `agent:<tool>:<name>`, so the command a capture's
+`cited_not_linked` hint prints can be run as printed. A person at a plain terminal is
+still recorded as themselves (`HIVEMIND_ACTOR`, then `human:<git config user.email>`),
+and a typed `--actor` or a `HIVEMIND_ACTOR` that already names an agent is kept.
+
 Use `--evidence` and `--hypotheses` with existing evidence and hypothesis ids
 when the decision depends on already captured context.
 
