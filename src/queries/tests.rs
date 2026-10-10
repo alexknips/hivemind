@@ -1719,6 +1719,100 @@ fn fluent_search_does_not_answer_on_two_rare_words_held_only_in_a_rationale() ->
 }
 
 #[test]
+fn fluent_search_lists_the_decision_whose_title_holds_the_one_word_the_question_is_about(
+) -> Result<()> {
+    let scenario = generic_ledger(
+        20,
+        &[(
+            "d:licence",
+            "No commercial licence line in the README",
+            "AGPL only.",
+        )],
+    )?;
+
+    // "query" and "output" are held by twenty decisions of twenty-one, so every one of those is at
+    // the bar (two of three) while the one decision that says "licence" holds one of three.
+    let (items, _) = fluent_answer(&scenario, "licence query output", 10)?;
+
+    assert_eq!(
+        items.first().map(|(id, _)| id.as_str()),
+        Some("d:licence"),
+        "the word one decision of twenty-one holds, in its title, outweighs two that sit in rationales"
+    );
+    assert_eq!(
+        items[0].1,
+        vec!["query".to_owned(), "output".to_owned()],
+        "it is labelled with what it lacks"
+    );
+    assert!(
+        items.len() > 3,
+        "the decisions at the bar are still listed after it"
+    );
+    Ok(())
+}
+
+#[test]
+fn fluent_search_does_not_list_the_decision_when_the_question_is_mostly_words_nobody_holds(
+) -> Result<()> {
+    let scenario = generic_ledger(
+        20,
+        &[(
+            "d:licence",
+            "No commercial licence line in the README",
+            "AGPL only.",
+        )],
+    )?;
+
+    // The rare word is one of four; the other three are what the ledger lacks, so they weigh most.
+    let (items, _) = fluent_answer(&scenario, "licence kubernetes helm rollout", 10)?;
+
+    assert_eq!(
+        items,
+        Vec::new(),
+        "a rare word among words nobody holds is a chance meeting, not the subject of the question"
+    );
+    Ok(())
+}
+
+#[test]
+fn fluent_search_does_not_list_a_decision_that_holds_the_rare_word_only_in_its_rationale(
+) -> Result<()> {
+    let scenario = generic_ledger(
+        20,
+        &[(
+            "d:readme",
+            "README wording",
+            "The code is AGPL, with no commercial licence.",
+        )],
+    )?;
+
+    let (items, _) = fluent_answer(&scenario, "licence query output", 10)?;
+
+    assert!(
+        items.iter().all(|(id, _)| id != "d:readme"),
+        "a word in a long rationale does not name the decision: {items:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn fluent_search_reads_an_adverb_as_the_word_a_title_says() -> Result<()> {
+    let scenario = generic_ledger(
+        20,
+        &[("d:shelf", "The public shelf is agent memory", "Wording.")],
+    )?;
+
+    let (items, _) = fluent_answer(&scenario, "shelf query publicly", 10)?;
+
+    assert_eq!(
+        items.first(),
+        Some(&("d:shelf".to_owned(), vec!["query".to_owned()])),
+        "\"publicly\" is the title's \"public\", so two of three words are held: the bar"
+    );
+    Ok(())
+}
+
+#[test]
 fn fluent_search_in_a_small_ledger_answers_the_decision_whose_title_holds_the_word() -> Result<()> {
     let scenario = titled_decisions(&[
         (
@@ -2070,8 +2164,29 @@ fn a_word_matches_its_noun_and_its_verb() {
 }
 
 #[test]
+fn a_word_matches_its_adverb() {
+    for (adjective, adverb) in [
+        ("public", "publicly"),
+        ("direct", "directly"),
+        ("current", "currently"),
+    ] {
+        assert_eq!(
+            held(adjective, adverb),
+            Some(WordMatch::Word),
+            "{adjective:?} asked, {adverb:?} said"
+        );
+        assert_eq!(
+            held(adverb, adjective),
+            Some(WordMatch::Word),
+            "{adverb:?} asked, {adjective:?} said"
+        );
+    }
+}
+
+#[test]
 fn a_word_does_not_match_a_different_word_it_starts() {
     for (asked, said) in [
+        ("only", "on"),
         ("string", "strategy"),
         ("sect", "section"),
         ("form", "former"),

@@ -1478,6 +1478,12 @@ const SHARED_WORDS_SHARE: f64 = 0.2;
 const SHARED_WORDS_MIN: usize = 3;
 /// ... this many of them words the decision's own title or topic keys hold.
 const SHARED_HEADLINE_WORDS_MIN: usize = 2;
+/// The words a decision's own title or topic keys hold must be, together, this many times rarer
+/// than a word held by one decision of the `searched + 1`, see `admit_below_bar`: one word held by
+/// four of sixty-nine decisions or by thirty-nine of ten thousand ...
+const SUBJECT_RARITY: f64 = 0.6;
+/// ... and carry at least this share of the weight of all the question's words.
+const SUBJECT_SHARE: f64 = 0.4;
 /// At most this many decisions below the bar are added to an answer.
 const BELOW_BAR_LIMIT: usize = 3;
 
@@ -1494,7 +1500,14 @@ const BELOW_BAR_LIMIT: usize = 3;
 ///   decisions hold do not meet by chance, whereas two that sit in a long rationale do ("load" and
 ///   "timeout" of a load balancer question), or
 /// - the ledger is small (`SMALL_LEDGER`), so counts say little, and a term the decision's title or
-///   topic keys hold is held by no other decision: its capturer named it as the subject.
+///   topic keys hold is held by no other decision: its capturer named it as the subject, or
+/// - the words its title or topic keys hold weigh, together, at least `SUBJECT_RARITY` times
+///   `ln(searched + 1)` and `SUBJECT_SHARE` of all the terms' weight: the question is mostly about
+///   what few decisions say, and this decision says it in its title ("what licence is the code
+///   under?" against the one decision titled for the licence, whereas "code" and "under" are held by
+///   a decision in five). Words the ledger lacks weigh in the total, so a question that adds to the
+///   rare word several that nobody holds ("do we need a licence to play music in the office?")
+///   never reaches the share.
 ///
 /// At most `BELOW_BAR_LIMIT` of them, those holding the most weight, are added; they all lack more
 /// terms than any decision at the bar, so they come after those and each is labelled with the
@@ -1536,7 +1549,14 @@ fn admit_below_bar(
                 .headline
                 .iter()
                 .any(|term| weights.holders.get(term) == Some(&1));
-        if pair || named {
+        let headline: f64 = holding
+            .headline
+            .iter()
+            .map(|term| weights.weight_of(*term))
+            .sum();
+        let subject =
+            headline >= SUBJECT_RARITY * weights.ledger().ln() && headline >= SUBJECT_SHARE * total;
+        if pair || named || subject {
             below.push((shared, decision.id.as_str(), index));
         }
     }

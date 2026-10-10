@@ -460,7 +460,16 @@ decision below the bar is returned when
   load balancer question), or
 - the ledger is small (16 decisions or fewer, too few for counts to say what is
   rare), and a word its title or topic keys hold is held by no other decision: its
-  capturer named it as the subject.
+  capturer named it as the subject, or
+- the words its title or topic keys hold weigh together at least 0.6 times
+  `ln(n + 1)` (one word held by four decisions of sixty-nine, thirty-nine of ten
+  thousand) and two fifths of the weight of all the question's words: the question
+  is mostly about what few decisions say, and this one says it in its title. "What
+  licence is the code under?" lists the one decision titled for the licence, though
+  "code" and "under" sit in the rationales of a decision in five. A question that
+  adds to the rare word several that nobody holds ("do we need a licence to play
+  music in the office?") never reaches the share, and a rare word that sits only in
+  a rationale does not name a decision.
 
 At most three such decisions are added (the ones holding the most weight, then
 decision id), each carrying `missing_terms` like any close match. `why` and

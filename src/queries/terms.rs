@@ -453,9 +453,9 @@ pub(crate) fn word_stems(text: &str) -> BTreeSet<&str> {
 }
 
 /// Suffixes that make a noun or an adjective of a verb or a noun (`accept` -> `acceptance`,
-/// `refute` -> `refutation`, `move` -> `movement`), each with the fewest letters that must be left
-/// once it is off, so a short word is never cut to a stub: `section` is not `sect`, `former` is
-/// not `form`.
+/// `refute` -> `refutation`, `move` -> `movement`) or an adverb of an adjective (`public` ->
+/// `publicly`), each with the fewest letters that must be left once it is off, so a short word is
+/// never cut to a stub: `section` is not `sect`, `former` is not `form`, `only` is not `on`.
 const DERIVED_SUFFIXES: &[(&str, usize)] = &[
     ("ation", 4),
     ("ition", 4),
@@ -468,6 +468,7 @@ const DERIVED_SUFFIXES: &[(&str, usize)] = &[
     ("al", 5),
     ("er", 5),
     ("or", 5),
+    ("ly", 5),
 ];
 
 /// The keys under which `recall` compares a lowercase `word`: two words are forms of one word when
@@ -476,7 +477,8 @@ const DERIVED_SUFFIXES: &[(&str, usize)] = &[
 /// - its stem (`stem`);
 /// - the word with its plural off and nothing else, for a form the stem cuts twice (`supersedes`
 ///   is `supersed` here and `super` as a stem);
-/// - what a noun suffix was added to (`acceptance` -> `accept`, `movement` -> `mov`);
+/// - what a noun or adverb suffix was added to (`acceptance` -> `accept`, `movement` -> `mov`,
+///   `publicly` -> `public`);
 /// - the part a verb in `-d`/`-de` and its noun in `-sion` share (`supersede` and `supersession`
 ///   share `superse`, `decide` and `decision` share `deci`, `expand` and `expansion` share
 ///   `expan`).

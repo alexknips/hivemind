@@ -479,6 +479,31 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`recall`, `why` and `verify` list the decision whose title is about the one word the
+  question is about, even when the question's other words sit in other decisions'
+  rationales.** "What licence is the code under?" returned four decisions that say "code" and
+  "under" in long rationales, each lacking "licence", and left out the one titled "No
+  commercial-licence line in the README; AGPL-3.0 only ...", although `recall "licence"`
+  found it first; "what shelf do we put the product on publicly?" left out "HiveMind's
+  public shelf is agent memory ...". A decision below the half bar is now also listed when
+  the words its title or topic keys hold weigh at least 0.6 times `ln(decisions + 1)` (a word
+  few decisions hold) and two fifths of the weight of all the question's words, with the
+  ledger's own counts and no word list. A rare word that sits only in a rationale does not
+  name a decision, and a question that adds to the rare word several that nobody holds ("do we
+  need a licence to play music in the office?") still finds nothing. A word ending in `ly`
+  is also read as the word it comes from (`publicly` is `public`), so a question's adverb
+  meets the title that says the adjective. Through the real binary on a copy of the crew
+  ledger (534 events), 437 questions: the checker's 143 go from 118 to 120 in the recall top
+  three (both new answers are first), and `why` lists both decisions first; the 294 others
+  lose no right answer, and two of them list one more decision below an unchanged first;
+  the 74 unrelated controls keep their 0 answered. 414 generated questions keep their 361
+  right, 27 first-listed and 20 listed answers and their 387 first and 407 top-three
+  recalls (four list one more decision below the right one). On the 455-event prefix of the
+  ledger, "what shelf do we put the product on publicly?" goes from a ten-decision list to
+  naming the public-shelf decision alone, and the licence question lists its decision first.
+  Not fixed: a decision that says the question's rare word only in its rationale, and a
+  synonym of a word the title says. The `recall_decisions` tool description and
+  `docs/AGENT_FLUENT_QUERYING.md` state the rule. (hivemind-t4g9u)
 - **An agent's `ground`, `retitle`, `disagree`, `supersede` and `move` from the CLI are
   recorded as the agent, not as the person whose git email is configured.** `emit
   decision.capture` already filed an agent's capture under the agent, but the follow-up
