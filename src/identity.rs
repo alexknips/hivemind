@@ -99,6 +99,17 @@ pub fn ambient_agent_actor() -> Option<String> {
     })
 }
 
+/// The actor a CLI write is recorded as when `--actor` was not typed: the default actor,
+/// unless that is not already an agent and the environment shows one. The one rule behind both
+/// the recorded actor (`Cli::adopt_ambient_agent`) and what `--help` says about it, so the two
+/// cannot disagree (hivemind-iynfm).
+pub fn untyped_write_actor(default_actor: String, ambient_agent: Option<String>) -> String {
+    if default_actor.trim().starts_with("agent:") {
+        return default_actor;
+    }
+    ambient_agent.unwrap_or(default_actor)
+}
+
 pub fn default_agent_session(tool: &str) -> String {
     agent_session_from_env(tool).unwrap_or_else(|| MANUAL_AGENT_SESSION.to_owned())
 }

@@ -9,7 +9,7 @@ use crate::events::{
     BlockerPriority, ProjectAnchorKind as EventProjectAnchorKind,
     ProjectLinkKind as EventProjectLinkKind, ProjectSource as EventProjectSource,
 };
-use crate::identity::{ambient_agent_actor, default_actor};
+use crate::identity::{ambient_agent_actor, default_actor, untyped_write_actor};
 use crate::ingest::{
     DocumentConflictResolutionAction, DocumentImportFormat, DocumentPreparationFormat,
     DEFAULT_SLACK_MENTION,
@@ -36,7 +36,10 @@ pub struct Cli {
     #[command(flatten)]
     pub actor_given: ActorGiven,
 
-    #[arg(long, default_value_t = default_actor())]
+    // The default is not shown as clap's `[default: ...]`: that is the git user, and in an agent
+    // session an untyped write is recorded as the agent. The help names the actor this
+    // environment records (hivemind-iynfm).
+    #[arg(long, default_value_t = default_actor(), hide_default_value = true, help = actor_help_here())]
     pub actor: String,
 
     #[arg(long, global = true, env = "HIVEMIND_TENANT", default_value = "local")]
@@ -78,12 +81,10 @@ impl Cli {
     /// `HIVEMIND_ACTOR` that already names an agent; `None` (no agent around) keeps the human
     /// default (hivemind-jglb7).
     pub fn adopt_ambient_agent(&mut self, ambient_agent: Option<String>) {
-        if self.actor_given.0 || self.actor.trim().starts_with("agent:") {
+        if self.actor_given.0 {
             return;
         }
-        if let Some(agent_actor) = ambient_agent {
-            self.actor = agent_actor;
-        }
+        self.actor = untyped_write_actor(std::mem::take(&mut self.actor), ambient_agent);
     }
 
     /// The person whose machine-local settings this run reads and writes (the current
@@ -162,9 +163,10 @@ pub enum Command {
     /// is kept beside everyone else's position, never overwriting it: a decision one actor
     /// accepted and another rejected reads `contested`.
     ///
-    /// Writes a `decision.rejected` event with `--reason` from `--actor`. A description that
-    /// matches more than one decision lists the candidates and writes nothing; pick one with
-    /// --pick N, or name the decision with --decision.
+    /// Writes a `decision.rejected` event with `--reason` from `--actor` (untyped, the agent in an
+    /// agent session and the git user at a plain terminal; `hivemind --help` names it). A
+    /// description that matches more than one decision lists the candidates and writes nothing;
+    /// pick one with --pick N, or name the decision with --decision.
     Disagree(DisagreeArgs),
     /// Replace a decision with a new one, found by describing it: the replacement is captured
     /// with its own title, rationale and options, and the old decision is marked superseded by
@@ -190,7 +192,8 @@ pub enum Command {
     Retitle(RetitleArgs),
     /// Say what an existing decision rests on, after the fact: a decision it follows from,
     /// something observed, something assumed, or a declared bet. Append-only and attributed to
-    /// whoever runs it (--actor), so older decisions stop reading "nothing declared" without
+    /// whoever runs it (--actor; untyped, the agent in an agent session and the git user at a
+    /// plain terminal), so older decisions stop reading "nothing declared" without
     /// pretending the grounding was there at capture. Resolves the decision by description with
     /// the same ambiguity gate as `supersede`; nothing is written when the description is
     /// ambiguous, a premise cannot be pinned to one decision, or a premise would close a loop.
@@ -934,7 +937,8 @@ pub struct SupersedeArgs {
     pub options: OptionLabelArgs,
 
     /// The option the replacement chose. Means the decision was already made: the replacement
-    /// is accepted right away, self-accepted from the recording actor (`--actor`), unless
+    /// is accepted right away, self-accepted from the recording actor (`--actor`; untyped, the
+    /// agent in an agent session and the git user at a plain terminal), unless
     /// `--still-proposed` is also given.
     #[arg(long = "chose")]
     pub chosen_option_label: Option<String>,
@@ -2748,6 +2752,32 @@ pub enum CliExit {
 impl CliExit {
     pub const fn code(self) -> i32 {
         self as i32
+    }
+}
+
+/// `--actor`'s help for the environment this process runs in.
+fn actor_help_here() -> String {
+    actor_help(&default_actor(), ambient_agent_actor())
+}
+
+/// What `--help` says an untyped `--actor` becomes: the actor `adopt_ambient_agent` will record,
+/// from the same rule, so the help names the agent in an agent session and the git user at a plain
+/// terminal (hivemind-iynfm).
+pub(crate) fn actor_help(default_actor: &str, ambient_agent: Option<String>) -> String {
+    let recorded = untyped_write_actor(default_actor.to_owned(), ambient_agent);
+    let lead = "Who a write is recorded as when --actor is not typed";
+    if recorded != default_actor {
+        format!(
+            "{lead}. Here that is the agent, {recorded}; a plain terminal records \
+             {default_actor} instead. A typed --actor is recorded as typed"
+        )
+    } else if default_actor.trim().starts_with("agent:") {
+        format!("{lead}: {default_actor}, named by HIVEMIND_ACTOR")
+    } else {
+        format!(
+            "{lead}: {default_actor}, from HIVEMIND_ACTOR or the git user. An agent session \
+             records the agent, agent:<tool>:<name>, instead"
+        )
     }
 }
 

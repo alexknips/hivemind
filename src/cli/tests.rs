@@ -6507,6 +6507,39 @@ fn a_plain_terminal_keeps_the_human_default() {
 }
 
 #[test]
+fn actor_help_names_the_actor_an_untyped_write_is_recorded_as() {
+    // hivemind-iynfm: the help and `adopt_ambient_agent` share one rule, so what `--help` says
+    // is what a write records.
+    let agent_help = actor_help("human:alice", Some("agent:claude:crew-x".to_owned()));
+    assert!(
+        agent_help.contains("Here that is the agent, agent:claude:crew-x;"),
+        "{agent_help}"
+    );
+    assert!(
+        agent_help.contains("a plain terminal records human:alice instead"),
+        "{agent_help}"
+    );
+
+    let plain_help = actor_help("human:alice", None);
+    assert!(
+        plain_help.contains("recorded as when --actor is not typed: human:alice,"),
+        "{plain_help}"
+    );
+    assert!(
+        !plain_help.contains("Here that is the agent"),
+        "{plain_help}"
+    );
+
+    // A `HIVEMIND_ACTOR` that already names an agent is kept over the ambient one.
+    let pinned_help = actor_help("agent:codex:pinned", Some("agent:claude:crew-x".to_owned()));
+    assert!(
+        pinned_help.contains(": agent:codex:pinned, named by HIVEMIND_ACTOR"),
+        "{pinned_help}"
+    );
+    assert!(!pinned_help.contains("crew-x"), "{pinned_help}");
+}
+
+#[test]
 fn settings_stay_with_the_person_when_an_agent_takes_over_the_writes() {
     // The current-project setting a person made at their terminal is read under the key it
     // was written under, not under the agent that now records the writes.

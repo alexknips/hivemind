@@ -311,3 +311,79 @@ fn the_binary_records_the_agent_in_an_agent_session_and_the_person_at_a_plain_te
     );
     Ok(())
 }
+
+/// The `--actor` entry of `hivemind --help` as the binary prints it in this environment,
+/// whitespace folded.
+fn actor_help_entry(dir: &Path, home: &Path, agent_env: bool) -> TestResult<String> {
+    let output = hivemind_bin(dir, home, agent_env).arg("--help").output()?;
+    assert!(output.status.success(), "--help failed");
+    let help = String::from_utf8(output.stdout)?;
+    let start = help.find("--actor <ACTOR>").ok_or("--help lists --actor")?;
+    let len = help[start..]
+        .find("--tenant")
+        .ok_or("--actor is followed by --tenant")?;
+    Ok(help[start..start + len]
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" "))
+}
+
+#[test]
+fn help_names_the_actor_an_untyped_write_is_recorded_as_in_that_environment() -> TestResult<()> {
+    // hivemind-iynfm: `--help` named the git user as the `--actor` default in an agent session,
+    // where an untyped write is recorded as the agent. Help and the recorded actor come from
+    // one rule; this compares what the binary says with what the binary writes.
+    let home = Scratch::new("help-home")?;
+    fs::write(
+        home.path().join("gitconfig"),
+        "[user]\n\temail = git-user@example.test\n\tname = Git User\n",
+    )?;
+    let scratch = Scratch::new("help")?;
+    let dir = scratch.path();
+    let first = seed(dir, "Checker summary goes out on Mondays")?;
+    let second = seed(dir, "Checker summary lists failures first")?;
+
+    let agent_help = actor_help_entry(dir, home.path(), true)?;
+    let agent_recorded = disagree_with_binary(dir, home.path(), true, &first)?.actor_id;
+    assert!(
+        agent_help.contains(&format!("Here that is the agent, {agent_recorded};")),
+        "an agent session's help names the agent it records: {agent_help}"
+    );
+    assert!(
+        !agent_help.contains("[default:"),
+        "no git-user default is advertised as the default: {agent_help}"
+    );
+
+    let person_help = actor_help_entry(dir, home.path(), false)?;
+    let person_recorded = disagree_with_binary(dir, home.path(), false, &second)?.actor_id;
+    assert!(
+        person_help.contains(&format!(
+            "recorded as when --actor is not typed: {person_recorded},"
+        )),
+        "a plain terminal's help still names the git user it records: {person_help}"
+    );
+    assert!(
+        !person_help.contains("Here that is the agent"),
+        "no agent is claimed where none is in the environment: {person_help}"
+    );
+
+    // The write verbs that name `--actor` say what an untyped one is, in either environment.
+    for verb in ["ground", "disagree"] {
+        for agent_env in [true, false] {
+            let output = hivemind_bin(dir, home.path(), agent_env)
+                .args([verb, "--help"])
+                .output()?;
+            let help = String::from_utf8(output.stdout)?
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(
+                help.contains(
+                    "untyped, the agent in an agent session and the git user at a plain terminal"
+                ),
+                "{verb} --help says what an untyped --actor is: {help}"
+            );
+        }
+    }
+    Ok(())
+}

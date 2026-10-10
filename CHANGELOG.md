@@ -538,6 +538,14 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   terminal with no agent still records the person, a typed `--actor` still wins, and a
   `HIVEMIND_ACTOR` that already names an agent is kept. The current-project setting a
   person made with `project use` is still read under the person's key. (hivemind-jglb7)
+- **`hivemind --help` names the actor an untyped write is recorded as in the session that
+  reads it.** The `--actor` line printed `[default: human:<git user.email>]` in every
+  environment, so an agent checking who its `ground`, `disagree` or `supersede` would be
+  recorded as was told the person, while the write was recorded as the agent. The line now
+  reads "Here that is the agent, agent:<tool>:<name>; a plain terminal records
+  human:<git user.email> instead" in an agent session, and names the git user (or
+  `HIVEMIND_ACTOR`) at a plain terminal. Help and the recorded actor come from one rule. A
+  typed `--actor` is still recorded as typed. (hivemind-iynfm)
 - **A rationale that quotes a full decision id is no longer refused as a "bare list item"
   about one time in five.** The capture check for a reference into a chat list (`1a`, `2. a`)
   read a four-digit uuid group of three digits and a letter, such as the `612a` in
